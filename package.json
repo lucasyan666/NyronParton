@@ -1,0 +1,36 @@
+{
+  "name": "nyron",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "photos:compress": "node scripts/compress-photos.mjs",
+    "photos:placeholders": "node scripts/make-placeholders.mjs",
+    "photos:import": "node scripts/import-photos.mjs",
+    "photos:scan": "node scripts/scan-drop.mjs",
+    "photos:hero": "node scripts/set-hero.mjs"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.114.0",
+    "@react-three/fiber": "^8.17.10",
+    "@react-three/postprocessing": "^2.16.3",
+    "gsap": "^3.12.5",
+    "lenis": "^1.1.14",
+    "next": "14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.7",
+    "@types/three": "^0.169.0",
+    "puppeteer-core": "^23.11.1",
+    "sharp": "^0.33.5",
+    "typescript": "^5.6.3"
+  }
+}

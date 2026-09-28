@@ -1,0 +1,13 @@
+node_modules
+.next
+out
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+public/photos/*.ktx2
+
+# Drop-folder testing: originals and everything generated from them.
+drop/*
+!drop/README.md
+public/photos/drop-*
+data/generated.json
