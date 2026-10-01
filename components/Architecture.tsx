@@ -166,9 +166,13 @@ function RoomGroup({ seg, wl, maps, active, onNext, onFoyer }: {
   const walls = ([-1, 1] as const).map((side) => {
     const innerIn = turnIn === (side === -1 ? 'left' : 'right');
     const innerOut = turnOut === (side === -1 ? 'left' : 'right');
-    // A first room starts at the foyer wall. Otherwise the inner wall stops
-    // at the previous room's wall face and the outer one runs on to meet it.
-    const zStart = roomIndex === 0 ? 0 : innerIn ? -(prevHalf + OFF) : prevHalf + OFF;
+    // A first room starts at the foyer wall. After a turn both walls start
+    // past the corner square: the inner one where the previous room's wall
+    // ends, the outer one where the previous room's corner wall ends — that
+    // corner wall is drawn by the previous room, so it closes the view down
+    // that room even when this one is not drawn (from the foyer, say).
+    void innerIn;
+    const zStart = roomIndex === 0 ? 0 : -(prevHalf + OFF);
     const zEnd = turnOut ? (innerOut ? -(length - nextHalf - OFF) : -(length + nextHalf + OFF)) : -length;
     return { side, zStart, zEnd };
   });
@@ -177,8 +181,9 @@ function RoomGroup({ seg, wl, maps, active, onNext, onFoyer }: {
   const local = useMemo(() => clone(maps, Math.max(0.5, span / TILE_W), CEILING / TILE_H), [maps, span]);
   const endMaps = useMemo(() => clone(maps, (hw * 2 + 0.6) / TILE_W, CEILING / TILE_H), [maps, hw]);
 
-  // Ceiling: across the room, including the corner square it turns through.
-  const zBack = roomIndex === 0 ? 0 : prevHalf + OFF;
+  // Ceiling: across the room and the corner square it turns out through.
+  // The square it turned in through belongs to the previous room.
+  const zBack = roomIndex === 0 ? 0 : -(prevHalf + OFF);
   const zFront = turnOut ? -(length + nextHalf + OFF) : -(length + 1.8);
   const ceilW = (hw + OFF) * 2;
   const ceilD = zBack - zFront;
@@ -212,6 +217,19 @@ function RoomGroup({ seg, wl, maps, active, onNext, onFoyer }: {
           <planeGeometry args={[ceilW, ceilD]} />
           <meshStandardMaterial color={mood.floor} roughness={0.55} metalness={0} polygonOffset polygonOffsetFactor={-1} />
         </mesh>
+      )}
+
+      {/* The corner wall: the far side of the square this room turns out
+          through — the wall you walk toward before the turn. */}
+      {turnOut && (
+        <group position={[0, 0, -(length + nextHalf + OFF)]}>
+          <Wall maps={endMaps} args={[(hw + OFF) * 2, CEILING]} position={[0, CEILING / 2, 0]} color={mood.wallTint} normal={normal} />
+          <Cove length={(hw + OFF) * 2} position={[0, CEILING - 0.02, 0.06]} rotation={[Math.PI / 2, 0, Math.PI / 2]} color={mood.cove} />
+          <mesh position={[0, 0.035, 0.03]}>
+            <planeGeometry args={[(hw + OFF) * 2, 0.07]} />
+            <meshBasicMaterial color={mood.light ? '#b9b3a8' : '#0d0c0b'} side={THREE.DoubleSide} />
+          </mesh>
+        </group>
       )}
 
       {textSide !== 0 && seg.room && (

@@ -1,16 +1,15 @@
 # Nyron Parton — a moving exhibition
 
-A scroll-driven virtual showroom for a film photographer: a black-box gallery
-of dark board-marked concrete where each print is lit by its own stage light,
-which strikes on as you approach (`components/StageLight.tsx`). The walk is a
-path, not a line: rooms turn left and right through the building, so you
-never scroll into a wall — the camera looks ahead along the path and rounds
-each corner on its own. A salon hangs its works on the wall you approach
-before turning; the last room ends at an open door with light beyond it.
-Scrolling (or holding W) walks you forward with a gentle bob; hovering a print
-lifts it off the wall; clicking settles you in front of it and opens a
-caption. Each room's title and statement are on the wall at its entrance, and
-every print carries a small museum label.
+A scroll-driven virtual showroom for a film photographer. You arrive in a
+foyer: a tall concrete hall with one door per style of work, each with its
+title above it, a frame of light in that room's colour, and a pulsing arrow on
+the floor leading in. Choose a door (click it, the arrow, the picker at the
+bottom of the screen, or press 1–9) and you walk through into that room.
+
+Each room has its own look (warm concrete, near-black noir, or pale gallery)
+and lights each print with its own stage light that strikes on as you
+approach. Long rooms turn corners. At the far end a door stands open onto the
+next room's light: walk through it, or go back to the foyer (H).
 
 ## Run it
 
@@ -24,29 +23,32 @@ npm run dev                   # http://localhost:3000
 
 ## Your photographs
 
-**Quick look** — drop images (any names, formats, sizes) into `drop/` and:
+**One folder per room**, inside `drop/`:
 
-```bash
-npm run photos:scan   # → public/photos/*.webp + .thumb.webp, data/generated.json
+```
+drop/
+  hero.jpg                 the landing photograph (optional)
+  01-nights/               → the room "Nights"
+  02-black-and-white/
+    room.json              { "title", "subtitle", "mood": "concrete" | "noir" | "gallery" }
+  03-travel/
 ```
 
-A file named `hero.*` in `drop/` becomes the landing photograph instead of a
-work in the show. Or set it directly: `npm run photos:hero -- path/to/image.jpg`.
-
-Restart the dev server. Delete `data/generated.json` to return to the demo.
-
-**Curated** — one folder per room, with a room title:
-
 ```bash
-npm run photos:import -- ~/Photos/nights --room nights --title "Nights"
+npm run photos:scan        # → public/photos/*.webp + .thumb.webp, data/generated.json
 ```
 
-It prints a room block to paste into `EXHIBITION` in `data/exhibition.ts`.
-Fill in `caption`, `year`, `medium`. Rooms of three to six works read best.
+Restart the dev server. `drop/README.md` has the details. Loose files with no
+folder are dealt into rooms automatically, for a quick look. Delete
+`data/generated.json` to return to the built-in demo.
 
 Every image is written twice: a 2048px WebP (the print) and a 400px thumb the
 loader shows first so a frame is never blank. Target under 150 KB per print;
-the scripts report the average.
+the scan reports the average.
+
+**Hand-curated** shows can be written straight into `data/exhibition.ts` as
+`WINGS` (a wing is a room in the foyer; it can hold several rooms of its own).
+`npm run photos:import` prints a block to paste.
 
 ## Structure
 
@@ -59,29 +61,45 @@ components/Scene.tsx      camera rig, focus glide, adaptive resolution
 components/Frame.tsx      one print: mount, moulding, shadow, hover lift, thumb→full
 components/FrameLabel.tsx 3D hover title (troika, bundled Instrument Serif)
 components/Caption.tsx    click caption, DOM in 3D via <Html transform>
-components/Architecture   each room in its own frame; corner walls, vestibule, exit door
+components/Foyer.tsx      the hall: doors, titles, light frames, floor spill, arrows
+components/PulseArrow     floor chevrons with a travelling pulse (bloom does the glow)
+components/Architecture   every room in its own frame; corner walls, end doors
+components/RoomPicker     the foyer's choice in the DOM: keyboard, screen readers
+components/EndPanel       end of a room: next room, back to the foyer, contact
 components/WallText.tsx   room title + statement on the wall at each entrance
 components/Footer.tsx     rises over the final room
 
-lib/layout.ts             rooms as path segments with turns; scroll ↔ path distance;
-                          pathPoint/pathFrame for the camera; corner rounding
+lib/layout.ts             foyer + one walk per wing; rooms as path segments with turns;
+                          print placement checked against real wall extents
+lib/moods.ts              the three room looks: walls, lamps, fog, ink
 lib/cameraStore.ts        camera z outside React (see Performance)
 lib/useProximityTexture   two-tier residency: thumb far, full near
 lib/concrete.ts           procedural plaster / floor, generated on the client
 ```
 
-## How the path works
+## How the building works
 
-Every room is a straight segment in its own local frame (forward = −z, x
-across). `lib/layout.ts` lays each room out locally, then places it in the
-world at the previous room's far corner, rotated ±90°. At a corner the inner
-wall stops short to open into the next room and the outer wall runs on to
-close it; the next room's outer wall begins behind its own origin, forming the
-wall you faced on approach — which is where a salon hangs its works. Camera
-position is a path distance `s`; `pathPoint(s)` rounds corners with a small
-bezier, and the camera looks at `pathPoint(s + 6.5)`, so it turns before it
-arrives. Custom-layout positions in `data/exhibition.ts` are in the room's
-local frame.
+`lib/layout.ts` builds a foyer and, for each wing, a **walk**: a path of
+straight segments in their own local frames (forward = −z, x across). A walk
+crosses the foyer to its door (straight, or an S-bend for an off-centre door),
+then runs through the wing's rooms, turning left and right so you never scroll
+into a wall. Only the chosen wing's walk is followed. The page is as long as
+that walk, and scroll maps to path distance in pixels, so the page can grow
+and shrink as you change rooms without the camera jumping.
+
+Wings fan apart from the foyer. If a later room of one wing would pass where
+another wing's first room stands, the two are never drawn at once: first rooms
+of other wings show only while you are in the foyer, seen through their doors.
+
+At a corner the inner wall stops short and the outer wall runs on. The room
+turning out draws the corner wall you face, so the view down a room is closed
+even when the next room is not drawn. Corridor prints are placed against the
+real extent of the wall they hang on, using their actual width. A wide
+landscape print is pushed along rather than allowed to hang past the end of
+its wall.
+
+Moving between wings from inside a room fades through black, arrives in the
+foyer just short of the new door, and walks you in, so the foyer stays the map.
 
 ## Design decisions worth keeping
 
@@ -135,8 +153,11 @@ Timesteps are clamped to 50 ms so a tab switch cannot snap the camera. There
 is no adaptive resolution: dropping pixel ratio while moving made the prints
 visibly soften, which on a photography site is worse than a lower frame rate.
 
-`tools/shoot.mjs` renders the walk in headless Chrome and writes screenshots —
-the only honest way to check what the room looks like without opening it.
+`tools/tour.mjs` walks every room in headless Chrome (foyer, each door, both
+sides of every corner, each end) and writes screenshots. It is the only honest
+way to check what a room looks like without opening it. `tools/test-lock.mjs`
+checks that a held photo cannot be scrolled away from. Both use dev-only hooks,
+so run them against `npm run dev`.
 Software GL runs at a few fps, so animations take ~10× longer to settle there.
 
 Surface relief (plaster, floor) is generated procedurally at idle, after first
@@ -145,4 +166,4 @@ paint, and swapped in — the first frames draw flat plaster. A service worker
 
 ## Keyboard
 
-Hold `W` / `↑` to walk, `S` / `↓` to walk back · `J` / `→` next work · `K` / `←` previous · `Enter` open / close · `Esc` close
+`1`–`9` choose a room · `H` back to the foyer · hold `W` / `↑` to walk, `S` / `↓` to walk back · `J` / `→` next work · `K` / `←` previous · `Enter` open / close · `Esc` close

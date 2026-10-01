@@ -195,11 +195,12 @@ function FrameImpl({ placement, revealed, dimmed, onSelect, gate = 'always', ink
 
   return (
     <group ref={group} position={position} rotation={[0, rotationY, 0]}>
-      {/* Stays on the wall while the plate lifts. */}
-      <mesh ref={shadow} position={[0, -0.03, -0.012]} material={shadowMaterial}>
+      {/* Stays on the wall while the plate lifts. The frame's back sits on
+          the wall's face, so these lie a hair in front of it. */}
+      <mesh ref={shadow} position={[0, -0.03, 0.002]} material={shadowMaterial} renderOrder={1}>
         <planeGeometry args={[frameW * 1.5, frameH * 1.5]} />
       </mesh>
-      <mesh ref={glow} position={[0, 0, -0.03]} material={glowMaterial} visible={false}>
+      <mesh ref={glow} position={[0, 0, 0.004]} material={glowMaterial} visible={false} renderOrder={2}>
         <planeGeometry args={[frameW * GLOW_SPREAD, frameH * GLOW_SPREAD]} />
       </mesh>
 

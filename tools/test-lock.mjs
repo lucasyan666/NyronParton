@@ -13,8 +13,12 @@ await page.goto(base, { waitUntil: 'networkidle0', timeout: 180000 });
 await page.waitForSelector('.intro');
 await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
 await page.waitForFunction(() => !document.querySelector('.boot-quiet'), { timeout: 120000 }).catch(() => {});
-await page.evaluate(() => window.__nyronScroll(0.30));
-await sleep(9000);
+// Works only hang in a chosen room now: walk into the first one.
+await page.evaluate(() => window.__nyronScroll(1));
+await sleep(3000);
+await page.evaluate(() => window.__nyronWing(0));
+await page.waitForFunction(() => !window.__nyronState().navigating, { timeout: 90000, polling: 500 });
+await sleep(4000);
 
 await page.evaluate(() => window.__nyron.select(2));
 /*
