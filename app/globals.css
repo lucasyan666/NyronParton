@@ -374,6 +374,15 @@ button { font: inherit; color: inherit; }
   line-height: 0.98;
   letter-spacing: -0.02em;
 }
+.hud-room-sub {
+  margin: 8px 0 0;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--ink-dim);
+}
+.hud.is-light .hud-room-sub { color: #5d5850; }
+.hud.is-foyer .hud-progress { opacity: 0; }
+
 .hud-room-statement {
   margin: 12px 0 0;
   font-size: 13px;
@@ -409,6 +418,9 @@ button { font: inherit; color: inherit; }
 .hud.is-held .hud-top,
 .hud.is-held .hud-room,
 .hud.is-held .hud-progress { opacity: 0.18; }
+/* At a wing's end the end panel owns the bottom of the screen. */
+.hud.is-ending .hud-bottom, .hud.is-ending .hud-room { opacity: 0; }
+.hud-bottom { transition: opacity 320ms ease; }
 .hud-top, .hud-room, .hud-progress { transition: opacity 420ms ease; }
 
 /* ---------------------------------- Wall label (3D, via <Html transform>)
@@ -460,28 +472,182 @@ button { font: inherit; color: inherit; }
   color: #c9c2b5;
 }
 
-/* ---------------------------------- Footer */
+/* ---------------------------------- Pulsing chevrons (DOM)
+   Three small chevrons with a pulse running toward the arrowhead — the same
+   gesture as the arrows on the gallery floor, so the two read as one idea. */
 
-.footer {
+.pulse-chevrons {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: 2px;
+}
+.pulse-chevrons i {
+  width: 6px; height: 6px;
+  border-top: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0.25;
+  animation: chevron 1.9s var(--ease) infinite;
+}
+.pulse-chevrons i:nth-child(2) { animation-delay: 0.18s; }
+.pulse-chevrons i:nth-child(3) { animation-delay: 0.36s; }
+@keyframes chevron {
+  0%, 100% { opacity: 0.22; }
+  35%      { opacity: 1; }
+}
+
+/* ---------------------------------- Room picker (foyer, bottom centre) */
+
+.picker {
+  position: fixed;
+  left: 50%; bottom: 22px;
+  z-index: 25;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  max-width: calc(100vw - 32px);
+  background: rgba(18, 17, 16, 0.66);
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+  border: 1px solid rgba(236, 230, 218, 0.1);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translate(-50%, 14px);
+  pointer-events: none;
+  transition: opacity 420ms var(--ease), transform 520ms var(--ease);
+}
+.picker.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+.picker-label, .picker-hint {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.picker-hint { letter-spacing: 0.08em; text-transform: none; opacity: 0.7; }
+.picker-rooms {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+.picker-room {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px 9px 12px;
+  border: 1px solid rgba(236, 230, 218, 0.12);
+  border-radius: 10px;
+  background: rgba(236, 230, 218, 0.04);
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 240ms ease, border-color 240ms ease, transform 300ms var(--ease);
+}
+.picker-room:hover, .picker-room:focus-visible {
+  background: rgba(236, 230, 218, 0.1);
+  border-color: rgba(236, 230, 218, 0.3);
+  transform: translateY(-2px);
+}
+.picker-room .pulse-chevrons { color: var(--accent); }
+.picker-room.is-current { border-color: rgba(224, 102, 61, 0.55); }
+.picker-index {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+.picker-title {
+  font-family: var(--serif);
+  font-size: 19px;
+  line-height: 1;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+}
+/* A dot of the room's light: warm, cool, or white. */
+.picker-mood {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #ffc98a;
+  box-shadow: 0 0 10px currentColor;
+  color: #ffc98a;
+}
+.picker-mood[data-mood='noir'] { background: #cfe0ff; color: #cfe0ff; }
+.picker-mood[data-mood='gallery'] { background: #fffaf0; color: #fffaf0; }
+
+/* ---------------------------------- End of a wing */
+
+.endpanel {
   position: fixed; left: 0; right: 0; bottom: 0;
   z-index: 30;
-  padding: 34px 24px 26px;
+  padding: 26px 24px 16px;
   display: grid;
-  gap: 18px;
+  gap: 10px;
   justify-items: center;
   text-align: center;
-  background: linear-gradient(to top, rgba(12, 11, 10, 0.97) 78%, rgba(12, 11, 10, 0));
+  background: linear-gradient(to top, rgba(12, 11, 10, 0.92) 62%, rgba(12, 11, 10, 0));
   opacity: var(--f);
   transform: translateY(calc((1 - var(--f)) * 28px));
   will-change: transform, opacity;
 }
-.footer-line {
+.end-line {
   margin: 0;
   font-family: var(--serif);
   font-size: clamp(20px, 2.2vw, 28px);
   line-height: 1.2;
 }
-.footer-line em { color: var(--ink-dim); }
+.end-line em { color: var(--ink-dim); }
+.end-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+.end-next, .end-foyer {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 18px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transition: background 240ms ease, border-color 240ms ease, transform 300ms var(--ease);
+}
+.end-next {
+  border: 1px solid rgba(224, 102, 61, 0.6);
+  background: rgba(224, 102, 61, 0.14);
+  color: var(--ink);
+}
+.end-next em {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+  margin-left: 6px;
+}
+.end-next .pulse-chevrons { color: var(--accent); }
+.end-foyer {
+  border: 1px solid rgba(236, 230, 218, 0.18);
+  background: transparent;
+  color: var(--ink-dim);
+}
+.end-next:hover, .end-foyer:hover { transform: translateY(-2px); }
+.end-foyer:hover { color: var(--ink); border-color: rgba(236, 230, 218, 0.4); }
+
 .footer-links {
   display: flex;
   flex-wrap: wrap;
@@ -496,6 +662,35 @@ button { font: inherit; color: inherit; }
 .footer-links a:hover { border-color: var(--ink); }
 .footer-book { color: var(--accent); }
 .footer-mark { color: var(--ink-dim); margin: 0; }
+.endpanel .footer-mark { display: none; }
+
+/* ---------------------------------- Door transition */
+
+.fade {
+  position: fixed; inset: 0;
+  z-index: 50;
+  background: #0a0908;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 420ms var(--ease);
+}
+.fade.is-on { opacity: 1; pointer-events: auto; }
+
+/* ---------------------------------- Pale rooms: dark ink */
+
+.hud.is-light .hud-top, .hud.is-light .hud-room { color: #1d1b18; }
+.hud.is-light .hud-sub { color: #5d5850; }
+.hud.is-light .hud-progress { background: rgba(28, 26, 24, 0.18); }
+.hud.is-light .hud-progress-fill { background: #1d1b18; }
+.endpanel.is-light {
+  background: linear-gradient(to top, rgba(232, 228, 220, 0.96) 70%, rgba(232, 228, 220, 0));
+  color: #1d1b18;
+}
+.endpanel.is-light .end-line em,
+.endpanel.is-light .footer-mark,
+.endpanel.is-light .end-foyer { color: #5d5850; }
+.endpanel.is-light .end-foyer { border-color: rgba(28, 26, 24, 0.22); }
+.endpanel.is-light .end-next { color: #1d1b18; }
 
 /* ---------------------------------- Flat route (touch / reduced motion) */
 
@@ -524,6 +719,13 @@ button { font: inherit; color: inherit; }
 .flat-intro-cols p { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--ink-dim); }
 
 .flat-room { padding: 72px 0 0; }
+.flat-sub {
+  margin: 40px 0 18px;
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 22px;
+  color: var(--ink-dim);
+}
 .flat-room-title {
   margin: 0;
   font-family: var(--serif);
@@ -613,6 +815,8 @@ button { font: inherit; color: inherit; }
 /* ---------------------------------- Preferences */
 
 @media (max-width: 700px) {
+  .picker { bottom: 12px; padding: 12px; }
+  .picker-title { font-size: 16px; }
   .intro-body { bottom: 8vh; padding: 22px 20px 24px; }
   .hero-copy { bottom: 16vh; }
   .intro-cue { display: none; }

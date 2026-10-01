@@ -47,3 +47,33 @@ export function publishCameraZ(z: number) {
     listeners.forEach((fn) => fn(z));
   }
 }
+
+/* ------------------------------------------------------------------ region */
+
+/**
+ * Whether the camera is in the foyer or inside the chosen wing. Published by
+ * the camera rig on change only, so the few things that care (which rooms
+ * and works are drawn, the HUD, the fog) re-render exactly once per crossing
+ * rather than on every bucket.
+ */
+type RegionListener = (inFoyer: boolean) => void;
+
+let inFoyer = true;
+const regionListeners = new Set<RegionListener>();
+
+export function getInFoyer() {
+  return inFoyer;
+}
+
+export function publishRegion(v: boolean) {
+  if (v === inFoyer) return;
+  inFoyer = v;
+  regionListeners.forEach((fn) => fn(v));
+}
+
+export function subscribeRegion(fn: RegionListener) {
+  regionListeners.add(fn);
+  return () => {
+    regionListeners.delete(fn);
+  };
+}

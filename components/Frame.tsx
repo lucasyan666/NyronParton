@@ -5,7 +5,7 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { Placement } from '@/lib/layout';
 import { peek, prefetch, release, request } from '@/lib/useProximityTexture';
-import { getCameraZ } from '@/lib/cameraStore';
+import { getCameraZ, getInFoyer } from '@/lib/cameraStore';
 import { FrameLabel } from './FrameLabel';
 import { createGlowMaterial } from '@/lib/glowMaterial';
 
@@ -27,14 +27,25 @@ const GLOW_SPREAD = 3.0;
 const LIFT_HOVER = 0.07;
 const LIFT_HELD = 0.14;
 
+/**
+ * When a frame may be drawn:
+ *  'always' — the chosen wing's works;
+ *  'foyer'  — another wing's first room, seen through its door from the foyer;
+ *  'wing'   — a later room that would clash with a foyer glimpse (see layout).
+ */
+export type FrameGate = 'always' | 'foyer' | 'wing';
+
 type Props = {
   placement: Placement;
   revealed: boolean;
   dimmed: boolean;
   onSelect: (id: string) => void;
+  gate?: FrameGate;
+  ink?: string;
+  inkDim?: string;
 };
 
-function FrameImpl({ placement, revealed, dimmed, onSelect }: Props) {
+function FrameImpl({ placement, revealed, dimmed, onSelect, gate = 'always', ink, inkDim }: Props) {
   const { photo, position, rotationY, height } = placement;
   const width = height * photo.aspect;
 
@@ -130,7 +141,8 @@ function FrameImpl({ placement, revealed, dimmed, onSelect }: Props) {
 
     if (!labelReady && distance < CULL) setLabelReady(true);
 
-    const shouldShow = distance <= CULL;
+    const allowed = gate === 'always' || (gate === 'foyer') === getInFoyer();
+    const shouldShow = allowed && distance <= CULL;
     if (shouldShow !== visible.current && group.current) {
       visible.current = shouldShow;
       group.current.visible = shouldShow;
@@ -213,7 +225,7 @@ function FrameImpl({ placement, revealed, dimmed, onSelect }: Props) {
         </mesh>
 
         {labelReady && (
-          <FrameLabel photo={photo} width={width} height={mountH} emphasisRef={emphasis} />
+          <FrameLabel photo={photo} width={width} height={mountH} emphasisRef={emphasis} ink={ink} inkDim={inkDim} />
         )}
       </group>
     </group>

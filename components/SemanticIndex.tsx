@@ -1,4 +1,4 @@
-import { EXHIBITION, thumbOf } from '@/data/exhibition';
+import { WINGS, thumbOf } from '@/data/exhibition';
 
 /**
  * Everything inside the WebGL canvas is invisible to crawlers and screen
@@ -25,31 +25,37 @@ export function SemanticIndex() {
         </p>
         <p>Prints at @nizprints. Available for commissions.</p>
       </section>
-      {EXHIBITION.map((room) => (
-        <section key={room.id}>
-          <h2>{room.title}</h2>
-          {room.statement && <p>{room.statement}</p>}
-          <ul>
-            {room.photos.map((photo) => (
-              <li key={photo.id}>
-                <article>
-                  <h3>{photo.title}</h3>
-                  <img
-                    src={photo.src}
-                    srcSet={`${thumbOf(photo.src)} 400w, ${photo.src} 2048w`}
-                    sizes="(max-width: 700px) 100vw, 50vw"
-                    alt={photo.caption || photo.title}
-                    loading="lazy"
-                    decoding="async"
-                    width={800}
-                    height={Math.round(800 / photo.aspect)}
-                  />
-                  <p>{photo.caption}</p>
-                  <p>{[photo.year, photo.medium, photo.place].filter(Boolean).join(' · ')}</p>
-                </article>
-              </li>
-            ))}
-          </ul>
+      {WINGS.map((wing) => (
+        <section key={wing.id}>
+          <h2>{wing.title}</h2>
+          {wing.subtitle && <p>{wing.subtitle}</p>}
+          {wing.rooms.map((room) => (
+            <section key={room.id}>
+              {wing.rooms.length > 1 && <h3>{room.title}</h3>}
+              {room.statement && <p>{room.statement}</p>}
+              <ul>
+                {room.photos.map((photo) => (
+                  <li key={photo.id}>
+                    <article>
+                      <h4>{photo.title}</h4>
+                      <img
+                        src={photo.src}
+                        srcSet={`${thumbOf(photo.src)} 400w, ${photo.src} 2048w`}
+                        sizes="(max-width: 700px) 100vw, 50vw"
+                        alt={photo.caption || photo.title}
+                        loading="lazy"
+                        decoding="async"
+                        width={800}
+                        height={Math.round(800 / photo.aspect)}
+                      />
+                      <p>{photo.caption}</p>
+                      <p>{[photo.year, photo.medium, photo.place].filter(Boolean).join(' · ')}</p>
+                    </article>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
         </section>
       ))}
     </div>

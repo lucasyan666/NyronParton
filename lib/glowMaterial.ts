@@ -29,6 +29,11 @@ export function createGlowMaterial(color: string, blending: THREE.Blending = THR
       uSoftness: { value: 0.34 },
       /** Quad width/height, so the falloff is even in world units. */
       uAspect: { value: 1 },
+      /**
+       * How much of the centre to remove: 0.9 behind a print (which covers it),
+       * 0 for a pool of light on the floor — hollow, that reads as a dark hole.
+       */
+      uHollow: { value: 0.9 },
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -43,6 +48,7 @@ export function createGlowMaterial(color: string, blending: THREE.Blending = THR
       uniform vec2  uInner;
       uniform float uSoftness;
       uniform float uAspect;
+      uniform float uHollow;
       varying vec2 vUv;
 
       void main() {
@@ -64,10 +70,10 @@ export function createGlowMaterial(color: string, blending: THREE.Blending = THR
         falloff *= falloff;
         falloff *= falloff;
 
-        // Kill the centre: the plate covers it, and letting the glow build up
-        // behind an opaque object only produces a bright rim on its edges.
+        // Kill the centre where a print covers it: glow building up behind an
+        // opaque object only produces a bright rim on its edges.
         float centre = 1.0 - smoothstep(0.0, 0.02, dist);
-        falloff *= 1.0 - centre * 0.9;
+        falloff *= 1.0 - centre * uHollow;
 
         float a = falloff * uOpacity;
         if (a < 0.002) discard;

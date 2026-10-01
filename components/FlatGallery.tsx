@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { EXHIBITION, thumbOf, type Photo } from '@/data/exhibition';
+import { WINGS, thumbOf, type Photo } from '@/data/exhibition';
 
 /**
  * The 2D show. Same editorial structure: photographs are visible, and tapping
@@ -68,15 +68,20 @@ export function FlatGallery() {
         </div>
       </section>
 
-      {EXHIBITION.map((room, roomIndex) => (
-        <section className="flat-room" key={room.id}>
-          <h2 className="flat-room-title">{room.title}</h2>
-          {room.statement && <p className="flat-room-statement">{room.statement}</p>}
-          <div className="flat-grid">
-            {room.photos.map((photo, i) => (
-              <Plate key={photo.id} photo={photo} eager={roomIndex === 0 && i < 2} />
-            ))}
-          </div>
+      {WINGS.map((wing, wingIndex) => (
+        <section className="flat-room" key={wing.id}>
+          <h2 className="flat-room-title">{wing.title}</h2>
+          {wing.subtitle && <p className="flat-room-statement">{wing.subtitle}</p>}
+          {wing.rooms.map((room, roomIndex) => (
+            <div key={room.id}>
+              {wing.rooms.length > 1 && roomIndex > 0 && <h3 className="flat-sub">{room.title}</h3>}
+              <div className="flat-grid">
+                {room.photos.map((photo, i) => (
+                  <Plate key={photo.id} photo={photo} eager={wingIndex === 0 && roomIndex === 0 && i < 2} />
+                ))}
+              </div>
+            </div>
+          ))}
         </section>
       ))}
 

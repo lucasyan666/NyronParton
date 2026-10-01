@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import type { Placement } from '@/lib/layout';
 import { getCameraZ } from '@/lib/cameraStore';
 import { createBeamMaterial } from '@/lib/beamMaterial';
+import type { MoodSpec } from '@/lib/moods';
 import { CEILING } from './Architecture';
 
 /** Path distance at which a lamp strikes on, and the further one at which it goes dark. */
@@ -21,10 +22,12 @@ const OFF_AT = 8.8;
  * is wider than the on/off band, so a lamp is always ready before it is
  * needed and never pops into existence lit.
  */
-export function StageLight({ placement, selected, focusAmount }: {
+export function StageLight({ placement, selected, focusAmount, mood }: {
   placement: Placement;
   selected: boolean;
   focusAmount: number;
+  /** Lamp colour and lens follow the wing's look: warm, cool, or white. */
+  mood: MoodSpec;
 }) {
   const { photo, position, rotationY, height } = placement;
   const { scene } = useThree();
@@ -42,8 +45,9 @@ export function StageLight({ placement, selected, focusAmount }: {
 
   const light = useRef<THREE.SpotLight>(null);
   const targetObj = useMemo(() => new THREE.Object3D(), []);
-  const beam = useMemo(() => createBeamMaterial('#ffd9a3'), []);
-  const lens = useMemo(() => new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.35, 0.95), toneMapped: false }), []);
+  const beam = useMemo(() => createBeamMaterial(mood.beam), [mood.beam]);
+  const lens = useMemo(() => new THREE.MeshBasicMaterial({ color: new THREE.Color(...mood.lens), toneMapped: false }), [mood.lens]);
+  const [lr, lg, lb] = mood.lens;
 
   useEffect(() => {
     targetObj.position.copy(target);
@@ -81,12 +85,12 @@ export function StageLight({ placement, selected, focusAmount }: {
     const a = amount.current;
     if (light.current) light.current.intensity = 30 * a;
     beam.uniforms.uOpacity.value = 0.14 * a;
-    lens.color.setRGB(0.12 + 1.5 * a, 0.1 + 1.25 * a, 0.08 + 0.88 * a);
+    lens.color.setRGB(0.1 + (lr - 0.1) * a, 0.1 + (lg - 0.1) * a, 0.1 + (lb - 0.1) * a);
   });
 
   return (
     <group>
-      <spotLight ref={light} position={lamp} angle={0.46} penumbra={0.7} distance={9} decay={1.5} intensity={0} color="#ffe6c4" />
+      <spotLight ref={light} position={lamp} angle={0.46} penumbra={0.7} distance={9} decay={1.5} intensity={0} color={mood.lamp} />
 
       {/* the can, aimed along the beam */}
       <group position={lamp} quaternion={quat}>

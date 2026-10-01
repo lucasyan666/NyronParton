@@ -1,71 +1,93 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import dynamic from 'next/dynamic';
 import Lenis from 'lenis';
 import { ALL_PHOTOS, HERO_SRC } from '@/data/exhibition';
 import { warmAllThumbs } from '@/lib/useProximityTexture';
 import {
-  INTRO_FRACTION,
-  WALK_LENGTH,
-  WALK_ORDER,
-  introProgress,
-  progressForS,
-  roomAtS,
+  ARRIVE_BEFORE,
+  DECISION_S,
+  END_S,
+  ENTRY_INSIDE,
+  INTRO_PX,
+  PX_PER_M,
+  WING_LAYOUTS,
+  inFoyerAt,
+  introProgressForScroll,
+  roomAt,
+  sForScroll,
+  scrollForS,
+  scrollLengthFor,
+  walkFor,
 } from '@/lib/layout';
-import { getCameraZ } from '@/lib/cameraStore';
+import { MOODS } from '@/lib/moods';
+import { getCameraZ, getInFoyer, subscribeRegion } from '@/lib/cameraStore';
 import { Hud } from './Hud';
 import { Intro } from './Intro';
-import { Footer } from './Footer';
+import { RoomPicker } from './RoomPicker';
+import { EndPanel } from './EndPanel';
 
 /**
  * The 3D scene — three.js, the post-processing stack, troika — is by far the
- * heaviest thing on the page, and none of it is needed to paint the hero.
- *
- * It is therefore NOT loaded on the first scroll: waiting for intent put the
- * whole cost (bundle, WebGL init, shader compilation, procedural plaster,
- * first textures) directly in the path of the gesture, which read as a
- * 2-second stall the moment you moved. Instead the hero paints first, then
- * the scene mounts on its own a beat later, hidden behind the hero, and warms
- * up while you are reading. By the time you scroll it is already running.
+ * heaviest thing on the page, and none of it is needed to paint the hero. The
+ * hero paints first, then the scene mounts behind it and warms up while the
+ * visitor reads. By the time they scroll it is already running.
  */
 const Scene = dynamic(() => import('./Scene').then((m) => m.Scene), { ssr: false });
 
-/** Scroll page height. More pixels per world unit = a slower, calmer walk. */
-const PIXELS_PER_UNIT = 130;
-/** The footer rises over this last slice of the scroll. */
-const FOOTER_FRACTION = 0.05;
+const WINGS_N = WING_LAYOUTS.length;
+/** With a single wing there is nothing to choose: walk straight in. */
+const INITIAL_WING: number | null = WINGS_N === 1 ? 0 : null;
+const FADE_MS = 420;
+
+const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
 export function Exhibition() {
-  const progress = useRef(0);
   const lenisRef = useRef<Lenis | null>(null);
+
+  /** The chosen wing; null while still choosing in the foyer. */
+  const [active, setActive] = useState<number | null>(INITIAL_WING);
+  const activeRef = useRef<number | null>(INITIAL_WING);
+  const walk = walkFor(active);
+  const wing = active == null ? null : WING_LAYOUTS[active];
+
+  // The camera's target, as path distance, written by the scroll handler and
+  // read every frame by the scene. Never React state: see cameraStore.
+  const targetS = useRef(sForScroll(0));
+  /** Bumped to make the camera jump rather than glide (door-to-door travel). */
+  const teleport = useRef(0);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [room, setRoom] = useState(roomAtS(0));
+  const selectedRef = useRef<string | null>(null);
+  const [roomInfo, setRoomInfo] = useState<ReturnType<typeof roomAt>>(null);
+  const [inFoyer, setInFoyer] = useState(true);
+  useEffect(() => subscribeRegion(setInFoyer), []);
 
   // Scroll-driven values stay in refs and are written straight to the DOM.
-  // As state they re-rendered Exhibition → Scene → every Frame per event.
   const progressBar = useRef<HTMLDivElement>(null);
   const intro = useRef(0);
-  const footer = useRef(0);
+  const endProgress = useRef(0);
   const inIntro = useRef(true);
   const [chromeVisible, setChromeVisible] = useState(false);
-  /** True once the visitor has actually moved. */
   const [started, setStarted] = useState(false);
   const [ready, setReady] = useState(false);
   const readyRef = useRef(false);
-  /** Re-applies the scroll mapping; set once Lenis is constructed. */
   const applyScroll = useRef<(() => void) | null>(null);
-  /** Starts background thumbnail warming, once the scene has drawn. */
   const warmWhenReady = useRef<(() => void) | null>(null);
   const [wantScene, setWantScene] = useState(false);
   const [stats, setStats] = useState<string | null>(null);
   /** -1, 0 or 1: the held walk key. */
   const walking = useRef(0);
-  /** Current selection, for handlers bound once on mount. */
-  const selectedRef = useRef<string | null>(null);
-  const showStats =
-    typeof window !== 'undefined' && window.location.search.includes('stats');
+  /** A door transition is under way; ignore further navigation until done. */
+  const navigating = useRef(false);
+  const [navBusy, setNavBusy] = useState(false);
+  const [fade, setFade] = useState<null | 'dark'>(null);
+  const showStats = typeof window !== 'undefined' && window.location.search.includes('stats');
+
+  /* ------------------------------------------------------------ scrolling */
 
   useEffect(() => {
     const lenis = new Lenis({
@@ -82,41 +104,34 @@ export function Exhibition() {
     };
     raf = requestAnimationFrame(loop);
 
-    const onScroll = ({ progress: rawP }: { progress: number }) => {
-      let p = rawP;
+    const onScroll = ({ scroll }: { scroll: number }) => {
       /*
-       * Until the scene can draw, hold the walk just short of the threshold.
-       * The intro still scrolls and the hero still moves, so the page never
-       * feels stuck — but you cannot arrive in a room that is not ready yet,
-       * which is what made the entrance jitter. `readyRef` flips on the
-       * scene's first frame, and `catchUp` then releases the hold.
+       * Until the scene can draw, hold the walk just short of the foyer. The
+       * intro still scrolls, so the page never feels stuck — but you cannot
+       * arrive somewhere that is not ready yet.
        */
-      if (!readyRef.current) p = Math.min(p, INTRO_FRACTION * 0.92);
-      progress.current = p;
-      intro.current = introProgress(p);
-      footer.current = Math.max(0, Math.min(1, (p - (1 - FOOTER_FRACTION)) / FOOTER_FRACTION));
+      const y = readyRef.current ? scroll : Math.min(scroll, INTRO_PX * 0.92);
+      const s = sForScroll(y);
+      targetS.current = s;
+      intro.current = introProgressForScroll(y);
 
+      const a = activeRef.current;
+      const wl = a == null ? null : WING_LAYOUTS[a];
+      endProgress.current = wl ? clamp01((s - (wl.length - END_S)) / END_S) : 0;
       if (progressBar.current) {
-        const walk = Math.max(0, (p - INTRO_FRACTION) / (1 - INTRO_FRACTION));
-        progressBar.current.style.transform = `scaleY(${walk})`;
+        const p = wl ? clamp01((s - wl.doorS) / Math.max(1, wl.length - wl.doorS)) : 0;
+        progressBar.current.style.transform = `scaleY(${p})`;
       }
 
-      if (p > 0.004) setStarted(true);
-      const past = p > INTRO_FRACTION * 0.82;
+      if (scroll > 4) setStarted(true);
+      const past = y > INTRO_PX * 0.82;
       if (past === inIntro.current) {
         inIntro.current = !past;
         setChromeVisible(past);
       }
     };
     lenis.on('scroll', onScroll);
-    // Let readiness re-run the mapping without reaching for private API.
-    applyScroll.current = () => onScroll({ progress: lenis.progress });
-
-    // Dev hook for the screenshot harness: jump the scroll without smoothing.
-    if (process.env.NODE_ENV !== 'production') {
-      (window as unknown as { __nyronScroll: (p: number) => void }).__nyronScroll = (p) =>
-        lenis.scrollTo(p * lenis.limit, { immediate: true });
-    }
+    applyScroll.current = () => onScroll({ scroll: lenis.scroll });
 
     return () => {
       cancelAnimationFrame(raf);
@@ -125,12 +140,127 @@ export function Exhibition() {
     };
   }, []);
 
-  /**
-   * Holding a work freezes the walk. Lenis keeps running its rAF loop (so the
-   * camera's own damping still settles into the focus pose) but stops
-   * consuming wheel and touch, and the keyboard walk is cleared — otherwise
-   * you can scroll straight past the thing you just opened.
+  /*
+   * The page is as long as the walk you are on: just the foyer while choosing,
+   * the whole wing once inside. When the wing changes, Lenis must re-measure
+   * before any scroll toward the new door — so actions that change the wing
+   * queue their next step here, to run once the new length is in the DOM.
    */
+  const afterLayout = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => {
+    activeRef.current = active;
+    lenisRef.current?.resize();
+    applyScroll.current?.();
+    const fn = afterLayout.current;
+    afterLayout.current = null;
+    fn?.();
+  }, [active]);
+
+  const switchWing = useCallback((next: number | null, then: () => void) => {
+    if (next === activeRef.current) {
+      lenisRef.current?.resize();
+      then();
+      return;
+    }
+    afterLayout.current = then;
+    setActive(next);
+  }, []);
+
+  const finishNav = useCallback(() => {
+    navigating.current = false;
+    setNavBusy(false);
+    lenisRef.current?.start();
+  }, []);
+
+  /** Walk from wherever the camera is, through the door and a few steps in. */
+  const walkThrough = useCallback((k: number) => {
+    const lenis = lenisRef.current;
+    if (!lenis) return;
+    const to = scrollForS(WING_LAYOUTS[k].doorS + ENTRY_INSIDE);
+    const metres = Math.abs(to - lenis.scroll) / PX_PER_M;
+    lenis.start();
+    lenis.scrollTo(to, {
+      duration: Math.min(3.4, Math.max(1.3, 0.9 + metres * 0.11)),
+      easing: easeInOutCubic,
+      lock: true,
+      force: true,
+      onComplete: finishNav,
+    });
+  }, [finishNav]);
+
+  const fadeOut = useCallback((then: () => void) => {
+    lenisRef.current?.stop();
+    setFade('dark');
+    window.setTimeout(then, FADE_MS + 30);
+  }, []);
+
+  const fadeIn = useCallback((then: () => void) => {
+    setFade(null);
+    window.setTimeout(then, FADE_MS);
+  }, []);
+
+  /**
+   * Into a wing. From the foyer you walk there; from inside another wing you
+   * step through the light, arrive in the foyer just short of the new door,
+   * and walk on in — so the foyer stays the map of the building.
+   */
+  const enterWing = useCallback((k: number) => {
+    if (k < 0 || k >= WINGS_N || navigating.current) return;
+    const lenis = lenisRef.current;
+    if (!lenis) return;
+    setWantScene(true);
+    setSelectedId(null);
+    navigating.current = true;
+    setNavBusy(true);
+
+    if (inFoyerAt(activeRef.current, getCameraZ())) {
+      switchWing(k, () => walkThrough(k));
+      return;
+    }
+    fadeOut(() => {
+      switchWing(k, () => {
+        lenis.scrollTo(scrollForS(WING_LAYOUTS[k].doorS - ARRIVE_BEFORE), { immediate: true, force: true });
+        teleport.current += 1;
+        fadeIn(() => walkThrough(k));
+      });
+    });
+  }, [switchWing, walkThrough, fadeOut, fadeIn]);
+
+  /** Back to the foyer, to choose again. */
+  const backToFoyer = useCallback(() => {
+    if (navigating.current) return;
+    const lenis = lenisRef.current;
+    if (!lenis) return;
+    setSelectedId(null);
+    navigating.current = true;
+    setNavBusy(true);
+    const next = INITIAL_WING;
+    const target = scrollForS(next == null ? DECISION_S : 0.2);
+
+    if (inFoyerAt(activeRef.current, getCameraZ())) {
+      switchWing(next, () => {
+        lenis.scrollTo(target, { duration: 1.2, easing: easeInOutCubic, force: true, onComplete: finishNav });
+      });
+      return;
+    }
+    fadeOut(() => {
+      switchWing(next, () => {
+        lenis.scrollTo(target, { immediate: true, force: true });
+        teleport.current += 1;
+        fadeIn(finishNav);
+      });
+    });
+  }, [switchWing, fadeOut, fadeIn, finishNav]);
+
+  const nextWing = useCallback(() => {
+    const cur = activeRef.current;
+    if (cur == null) return;
+    if (cur + 1 < WINGS_N) enterWing(cur + 1);
+    else backToFoyer();
+  }, [enterWing, backToFoyer]);
+
+  /* ------------------------------------------------- holding a work still */
+
   const heldScroll = useRef(0);
   useEffect(() => {
     selectedRef.current = selectedId;
@@ -141,64 +271,37 @@ export function Exhibition() {
       walking.current = 0;
       heldScroll.current = lenis.scroll;
       lenis.stop();
-      /*
-       * lenis.stop() blocks wheel and touch but not a programmatic scroll, a
-       * keyboard PageDown, or a browser scroll restore. Any of those would
-       * leave the page somewhere else, so Escape would drop you far from the
-       * work you were looking at. Snap the page back for as long as the work
-       * is held.
-       */
+      // lenis.stop() blocks wheel and touch but not a programmatic scroll,
+      // PageDown, or a scroll restore. Pin the page while the work is held.
       const pin = () => {
-        if (Math.abs(window.scrollY - heldScroll.current) > 1) {
-          window.scrollTo(0, heldScroll.current);
-        }
+        if (Math.abs(window.scrollY - heldScroll.current) > 1) window.scrollTo(0, heldScroll.current);
       };
       window.addEventListener('scroll', pin, { passive: true });
       return () => window.removeEventListener('scroll', pin);
     }
-
-    lenis.start();
+    if (!navigating.current) lenis.start();
   }, [selectedId]);
 
-  /** Scroll so the camera stands at path distance s. */
-  const goToZ = useCallback((s: number, duration = 1.4) => {
-    const lenis = lenisRef.current;
-    if (!lenis) return;
-    lenis.scrollTo(progressForS(s) * lenis.limit, { duration });
-  }, []);
-
-  /*
-   * Start DOWNLOADING the scene chunk immediately, in parallel with the hero
-   * image. It is ~860 KB of three.js and is by far the longest pole: measured
-   * cold, fetching and parsing it took ~2.9 s, while actually drawing the
-   * first room took 144 ms. Kicking the import off at mount (rather than
-   * after first paint) overlaps that download with the hero, so it is usually
-   * finished before anyone scrolls.
-   *
-   * This only warms the module cache; mounting still waits for first paint
-   * below, so the download never competes with the hero for main-thread time.
+  /**
+   * Clicks reach the canvas straight through the hero, which covers it while
+   * the intro plays. Ignore them until the room is actually on screen, or a
+   * click on the landing photograph could open a door behind it.
    */
-  useEffect(() => {
-    void import('./Scene').then(() => {
-      if (process.env.NODE_ENV !== 'production') {
-        (window as unknown as { __nyronSceneLoaded: boolean }).__nyronSceneLoaded = true;
-      }
-    });
+  const select3D = useCallback<React.Dispatch<React.SetStateAction<string | null>>>((v) => {
+    if (v !== null && intro.current < 0.8) return;
+    setSelectedId(v);
+  }, []);
+  const enter3D = useCallback((k: number) => {
+    if (intro.current < 0.8) return;
+    enterWing(k);
+  }, [enterWing]);
 
-    /*
-     * Warm every thumbnail from the DOM layer, not from inside the Canvas.
-     * These are ~23 KB each — the whole show is less than one full print —
-     * and having them resident means no frame is ever blank when you walk
-     * into a room. Running it here starts it alongside the hero rather than
-     * waiting for WebGL to come up, which is why it previously never ran at
-     * all on a fast load.
-     */
-    /*
-     * Deliberately late, and only once the scene has drawn. Started earlier
-     * these 24 small requests contend with the 675 KB scene chunk for the
-     * connection, which measurably delayed the first frame — the thing the
-     * visitor is actually waiting for.
-     */
+  /* --------------------------------------------------------------- warm-up */
+
+  useEffect(() => {
+    void import('./Scene');
+    // Thumbnails for every work, but only once the scene has drawn: earlier,
+    // they contend with the scene chunk for the connection.
     let t = 0;
     const kick = () => {
       t = window.setTimeout(() => {
@@ -210,66 +313,46 @@ export function Exhibition() {
     return () => clearTimeout(t);
   }, []);
 
-  /*
-   * Mount the scene shortly after the hero has painted. Two frames of
-   * headroom let the hero image decode and the first paint land, then the
-   * canvas comes up behind it and warms up while the visitor reads. Any
-   * earlier intent short-circuits the wait.
-   */
+  // Mount the scene one frame after the hero paints (or on any earlier intent),
+  // synchronously, so its warm-up genuinely starts behind the hero.
   useEffect(() => {
     if (wantScene) return;
-    /*
-     * flushSync so the scene tree mounts in one synchronous commit. Left to
-     * React's concurrent scheduler this state change is low priority: the
-     * canvas element commits quickly, then the expensive subtree underneath
-     * it renders in a later slice — measured as ~1.8 s during which the
-     * canvas existed but WebGL had not been initialised. Nothing is on
-     * screen yet (the hero covers it), so a long synchronous commit here
-     * costs the visitor nothing and gets the warm-up genuinely started.
-     */
     const go = () => flushSync(() => setWantScene(true));
-
-    /*
-     * One frame, not two plus a timer. The old gate cost ~440 ms of pure
-     * waiting between the hero painting and the canvas mounting — measured,
-     * and buying nothing: the hero is already on screen and covers the canvas
-     * completely, so the scene can start setting up immediately behind it.
-     */
-    let raf1 = 0;
-    const raf2 = 0, timer = 0;
-    raf1 = requestAnimationFrame(go);
-
+    const raf = requestAnimationFrame(go);
     const opts: AddEventListenerOptions = { passive: true, once: true };
     const events = ['wheel', 'touchstart', 'keydown', 'scroll', 'pointerdown'] as const;
     events.forEach((e) => window.addEventListener(e, go, opts));
-
     return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-      clearTimeout(timer);
+      cancelAnimationFrame(raf);
       events.forEach((e) => window.removeEventListener(e, go));
     };
   }, [wantScene]);
 
+  /** The hero's Enter: into the foyer, to the doors. */
   const enter = useCallback(() => {
     setWantScene(true);
     const lenis = lenisRef.current;
     if (!lenis) return;
-    lenis.scrollTo(INTRO_FRACTION * lenis.limit, { duration: 1.8 });
+    lenis.scrollTo(scrollForS(INITIAL_WING == null ? DECISION_S : 0.5), { duration: 1.8, easing: easeInOutCubic });
+  }, []);
+
+  /* -------------------------------------------------------------- keyboard */
+
+  /** Scroll so the camera stands at path distance s. */
+  const goToS = useCallback((s: number, duration = 1.4) => {
+    lenisRef.current?.scrollTo(scrollForS(s), { duration });
   }, []);
 
   /**
-   * Keyboard, game-style: hold W / ↑ to walk forward and S / ↓ to walk back;
-   * J / → and K / ← jump to the next or previous work; Enter opens the
-   * nearest; Escape closes. Walking is a held key driving the scroll each
-   * frame, so it goes through the same damping as the wheel and feels the
-   * same.
+   * Hold W / ↑ to walk, S / ↓ to walk back; J / → and K / ← jump between
+   * works; Enter opens the nearest; Escape closes. 1–9 choose a room; H goes
+   * back to the foyer.
    */
   useEffect(() => {
     let raf = 0;
     const step = () => {
       const lenis = lenisRef.current;
-      if (lenis && walking.current !== 0) {
+      if (lenis && walking.current !== 0 && !navigating.current) {
         lenis.scrollTo(lenis.scroll + walking.current * 11, { immediate: true });
       }
       raf = requestAnimationFrame(step);
@@ -280,40 +363,47 @@ export function Exhibition() {
       if (['w', 'W', 'ArrowUp', 's', 'S', 'ArrowDown'].includes(e.key)) walking.current = 0;
     };
     const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       const z = getCameraZ();
-      const next = () => WALK_ORDER.find((p) => p.focusS > z + 1.5);
-      const prev = () => [...WALK_ORDER].reverse().find((p) => p.focusS < z - 1.5);
+      const a = activeRef.current;
+      const order = a == null ? [] : WING_LAYOUTS[a].order;
 
+      if (/^[1-9]$/.test(e.key)) {
+        const k = Number(e.key) - 1;
+        if (k < WINGS_N) { e.preventDefault(); enterWing(k); }
+        return;
+      }
       switch (e.key) {
         case 'Escape':
           setSelectedId(null);
           break;
+        case 'h': case 'H': case 'Home':
+          if (selectedRef.current) break;
+          e.preventDefault(); backToFoyer(); break;
         case 'w': case 'W': case 'ArrowUp':
           if (selectedRef.current) break;
           e.preventDefault(); setWantScene(true); walking.current = 1; break;
         case 's': case 'S': case 'ArrowDown':
           if (selectedRef.current) break;
           e.preventDefault(); walking.current = -1; break;
-        case 'ArrowRight':
-        case 'j': {
+        case 'ArrowRight': case 'j': {
           if (selectedRef.current) break;
           e.preventDefault();
-          const p = next();
-          if (p) goToZ(p.focusS);
+          const p = order.find((q) => q.focusS > z + 1.5);
+          if (p) goToS(p.focusS);
           break;
         }
-        case 'ArrowLeft':
-        case 'k': {
+        case 'ArrowLeft': case 'k': {
           if (selectedRef.current) break;
           e.preventDefault();
-          const p = prev();
-          if (p) goToZ(p.focusS);
+          const p = [...order].reverse().find((q) => q.focusS < z - 1.5);
+          if (p) goToS(p.focusS);
           break;
         }
         case 'Enter': {
-          let best: (typeof WALK_ORDER)[number] | null = null;
+          let best: (typeof order)[number] | null = null;
           let bestD = 12;
-          for (const p of WALK_ORDER) {
+          for (const p of order) {
             const d = Math.abs(p.focusS - z);
             if (d < bestD) { bestD = d; best = p; }
           }
@@ -329,44 +419,69 @@ export function Exhibition() {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('keyup', onUp);
     };
-  }, [goToZ]);
+  }, [goToS, enterWing, backToFoyer]);
 
-  const handleCameraZ = useCallback((z: number) => {
-    const next = roomAtS(z);
-    setRoom((prev) => (prev?.id === next?.id ? prev : next));
+  /* ------------------------------------------------------ dev-only hooks */
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    const w = window as unknown as Record<string, unknown>;
+    w.__nyronScroll = (p: number) => {
+      const lenis = lenisRef.current;
+      if (lenis) lenis.scrollTo(p * lenis.limit, { immediate: true, force: true });
+    };
+    w.__nyronGoS = (s: number) => lenisRef.current?.scrollTo(scrollForS(s), { immediate: true, force: true });
+    w.__nyronLayout = () => WING_LAYOUTS.map((wl) => ({ doorS: wl.doorS, length: wl.length, mood: wl.mood }));
+    w.__nyronCorners = () =>
+      WING_LAYOUTS.flatMap((wl) => wl.rooms.filter((r) => r.turnOut).map((r) => ({ wing: wl.index, s: r.s0 + r.length })));
+    w.__nyronWing = (k: number) => enterWing(k);
+    w.__nyronFoyer = () => backToFoyer();
+    w.__nyronNext = () => nextWing();
+    w.__nyronState = () => ({
+      active: activeRef.current,
+      inFoyer: getInFoyer(),
+      s: getCameraZ(),
+      scroll: lenisRef.current?.scroll,
+      limit: lenisRef.current?.limit,
+      navigating: navigating.current,
+    });
+  }, [enterWing, backToFoyer, nextWing]);
+
+  const handleCameraZ = useCallback((s: number) => {
+    const next = roomAt(walkFor(activeRef.current), s);
+    setRoomInfo((prev) => (prev?.room.id === next?.room.id ? prev : next));
   }, []);
 
-  const selected = ALL_PHOTOS.find((p) => p.id === selectedId) ?? null;
-  const heroSrc = HERO_SRC;
+  const lightRoom = !inFoyer && wing ? MOODS[wing.mood].light : false;
+  const nextLayout = wing ? WING_LAYOUTS[wing.index + 1] ?? null : null;
 
   return (
     <>
       {wantScene && (
         <Scene
           onReady={() => {
-          readyRef.current = true;
-          if (process.env.NODE_ENV !== 'production') {
-            (window as unknown as { __nyronReady: boolean }).__nyronReady = true;
-          }
-          setReady(true);
-          // Release the hold: re-apply the mapping for wherever the page
-          // actually is now, so a visitor who scrolled ahead resumes there
-          // instead of waiting for their next wheel event.
-          applyScroll.current?.();
-          warmWhenReady.current?.();
-          warmWhenReady.current = null;
-        }}
+            readyRef.current = true;
+            if (process.env.NODE_ENV !== 'production') {
+              (window as unknown as { __nyronReady: boolean }).__nyronReady = true;
+            }
+            setReady(true);
+            applyScroll.current?.();
+            warmWhenReady.current?.();
+            warmWhenReady.current = null;
+          }}
           onStats={showStats ? setStats : undefined}
-          progress={progress}
+          targetS={targetS}
+          teleport={teleport}
+          active={active}
           selectedId={selectedId}
-          onSelect={setSelectedId}
+          onSelect={select3D}
           onCameraZ={handleCameraZ}
+          onEnterWing={enter3D}
+          onNextWing={nextWing}
+          onFoyer={backToFoyer}
         />
       )}
 
-      {/* The scene warms up behind the hero, so there is normally nothing to
-          wait for. This only appears if the visitor has already started
-          walking and the first frame has still not landed. */}
       {wantScene && !ready && started && (
         <div className="boot boot-quiet" role="status">
           <em>Preparing the rooms</em>
@@ -375,15 +490,34 @@ export function Exhibition() {
 
       {showStats && stats && <div className="stats">{stats}</div>}
 
-      <Intro progressRef={intro} heroSrc={heroSrc} onEnter={enter} />
-      <Hud room={room} barRef={progressBar} selected={!!selected} visible={chromeVisible} />
-      <Footer progressRef={footer} />
-
-      {/* Drives document height: intro + walk + a little run-off for the footer. */}
-      <div
-        style={{ height: (WALK_LENGTH * PIXELS_PER_UNIT) / (1 - INTRO_FRACTION) }}
-        aria-hidden
+      <Intro progressRef={intro} heroSrc={HERO_SRC} onEnter={enter} />
+      <Hud
+        wing={wing}
+        room={roomInfo}
+        inFoyer={inFoyer}
+        barRef={progressBar}
+        selected={!!selectedId}
+        visible={chromeVisible}
+        light={lightRoom}
       />
+      <RoomPicker
+        visible={chromeVisible && inFoyer && WINGS_N > 1 && !selectedId && !navBusy}
+        active={active}
+        onEnter={enterWing}
+      />
+      <EndPanel
+        progressRef={endProgress}
+        wing={wing}
+        next={nextLayout}
+        onNext={nextWing}
+        onFoyer={backToFoyer}
+        light={lightRoom}
+      />
+
+      <div className={`fade ${fade ? 'is-on' : ''}`} aria-hidden />
+
+      {/* Drives document height: the intro, then the walk you are on. */}
+      <div style={{ height: `calc(${scrollLengthFor(walk)}px + 100vh)` }} aria-hidden />
     </>
   );
 }

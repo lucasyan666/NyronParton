@@ -36,12 +36,16 @@ export function FrameLabel({
   width,
   height,
   emphasisRef,
+  ink = '#e6e0d4',
+  inkDim = '#a39c90',
 }: {
   photo: Photo;
   width: number;
   height: number;
   /** 0..1 hover/selection weight, damped by the parent Frame. */
   emphasisRef: React.MutableRefObject<number>;
+  ink?: string;
+  inkDim?: string;
 }) {
   const group = useRef<THREE.Group>(null);
   const titleRef = useRef<THREE.Mesh>(null);
@@ -93,7 +97,7 @@ export function FrameLabel({
         anchorY="middle"
         fontSize={size}
         letterSpacing={-0.01}
-        color="#e6e0d4"
+        color={ink}
         outlineWidth={0}
         maxWidth={width * 1.4}
         material-transparent
@@ -112,7 +116,7 @@ export function FrameLabel({
         anchorY="middle"
         fontSize={size * 0.62}
         letterSpacing={0.01}
-        color="#a39c90"
+        color={inkDim}
         outlineWidth={0}
         material-transparent
         material-opacity={0}

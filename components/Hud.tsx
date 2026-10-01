@@ -1,38 +1,70 @@
 'use client';
 
-import { EXHIBITION } from '@/data/exhibition';
+import { WING_LAYOUTS, type WingLayout } from '@/lib/layout';
 import type { Room } from '@/data/exhibition';
 
+const pad = (n: number) => String(n).padStart(2, '0');
+
 export function Hud({
+  wing,
   room,
+  inFoyer,
   barRef,
   selected,
   visible,
+  light,
 }: {
-  room: Room | null;
+  /** The chosen wing, or null while choosing. */
+  wing: WingLayout | null;
+  /** The room the camera is standing in. */
+  room: { room: Room; roomIndex: number } | null;
+  inFoyer: boolean;
   /** Written directly by the scroll handler; this component never re-renders on scroll. */
   barRef: React.RefObject<HTMLDivElement>;
   /** A work is held: the chrome recedes so nothing competes with it. */
   selected: boolean;
   /** False during the intro. */
   visible: boolean;
+  /** Pale room: dark ink. */
+  light: boolean;
 }) {
-  const index = room ? EXHIBITION.findIndex((r) => r.id === room.id) : -1;
+  const n = WING_LAYOUTS.length;
+  const inWing = !inFoyer && wing;
+  const key = inWing ? `${wing.index}-${room?.roomIndex ?? 0}` : 'foyer';
+
+  const hint = selected
+    ? 'Esc to return'
+    : inWing
+      ? 'Scroll or hold W to walk · click a work · H for the foyer'
+      : n > 1
+        ? ''
+        : 'Scroll or hold W to walk';
 
   return (
-    <div className={`hud ${selected ? 'is-held' : ''} ${visible ? '' : 'is-hidden'}`}>
+    <div className={`hud ${selected ? 'is-held' : ''} ${visible ? '' : 'is-hidden'} ${light ? 'is-light' : ''} ${inWing ? '' : 'is-foyer'}`}>
       <header className="hud-top">
         <span className="hud-mark">Nyron Parton</span>
         <span className="hud-sub">Film photography · Manchester</span>
       </header>
 
-      <div className="hud-room" key={room?.id ?? 'none'}>
-        {room && (
+      <div className="hud-room" key={key}>
+        {inWing ? (
           <>
             <span className="hud-room-index">
-              {String(index + 1).padStart(2, '0')} — {String(EXHIBITION.length).padStart(2, '0')}
+              Room {pad(wing.index + 1)} — {pad(n)}
             </span>
-            <h2 className="hud-room-title">{room.title}</h2>
+            <h2 className="hud-room-title">{wing.wing.title}</h2>
+            {wing.rooms.length > 1 && room && (
+              <p className="hud-room-sub">
+                {room.roomIndex + 1} of {wing.rooms.length}
+                {room.room.title !== wing.wing.title ? ` · ${room.room.title}` : ''}
+              </p>
+            )}
+          </>
+        ) : (
+          <>
+            <span className="hud-room-index">The foyer</span>
+            <h2 className="hud-room-title">{n > 1 ? `${n} rooms` : wing?.wing.title}</h2>
           </>
         )}
       </div>
@@ -42,7 +74,7 @@ export function Hud({
       </div>
 
       <footer className="hud-bottom">
-        <span>{selected ? 'Esc to return' : 'Scroll or hold W to walk · click a work · J / K next / previous'}</span>
+        <span>{hint}</span>
       </footer>
     </div>
   );
