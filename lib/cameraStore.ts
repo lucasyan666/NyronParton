@@ -94,3 +94,12 @@ export function getActiveWing() {
 export function setActiveWing(v: number | null) {
   activeWing = v;
 }
+
+/**
+ * How much of the screen's height the caption sheet covers on a portrait
+ * screen (0..1). The sheet measures itself and writes it here; the camera
+ * reads it to keep a held print clear of the sheet.
+ */
+let sheetShare = 0.3;
+export function getSheetShare() { return sheetShare; }
+export function setSheetShare(v: number) { sheetShare = Math.max(0.1, Math.min(0.6, v)); }

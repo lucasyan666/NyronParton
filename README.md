@@ -30,6 +30,21 @@ npm run dev                   # http://localhost:3000
 
 `?stats` on the URL shows a live FPS / draw-call readout.
 
+## Publish
+
+The site is plain static files (`output: 'export'` → `out/`), hosted on
+Cloudflare Pages as the project `nyronparton`:
+
+```bash
+npx wrangler login     # once per computer: approve in the browser within 2 minutes
+npm run photos:scan    # after changing anything in drop/
+npm run deploy         # build, then upload out/ to Cloudflare Pages
+```
+
+Only `out/` is uploaded: the originals in `drop/` never leave this computer,
+and the scan strips camera metadata (including location) from the web copies.
+`public/_headers` sets Cloudflare's caching.
+
 ## Your photographs
 
 **One folder per room**, inside `drop/`:
@@ -216,8 +231,8 @@ checks that a held photo cannot be scrolled away from. Both use dev-only hooks,
 so run them against `npm run dev`. Software GL runs at a few fps, so
 animations take ~10× longer to settle there.
 
-`tools/perf.mjs <url>` drives a production build on the real GPU like a
-visitor would (wheel, keys, mouse) and prints frame times per phase.
+`tools/perf.mjs <url>` drives a production build (`npm run build`, then
+`python3 -m http.server 3400 --directory out`) on the real GPU like a visitor would (wheel, keys, mouse) and prints frame times per phase.
 `tools/hitch.mjs <url>?stats` lists every slow frame with the GPU resources
 that appeared around it. A new texture or geometry mid-walk is a first-use
 cost the warm-up missed.

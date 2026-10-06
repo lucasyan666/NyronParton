@@ -134,7 +134,10 @@ function Door({ wl, onEnter }: {
   const portal = mood.portal;
   const label = `ROOM ${String(wl.index + 1).padStart(2, '0')}`;
   const count = wl.placements.length;
-  const subtitle = wl.wing.subtitle ? `${wl.wing.subtitle}` : `${count} works`;
+  // No subtitle given: say what is inside, or that the room is still empty.
+  const subtitle = wl.wing.subtitle
+    ? `${wl.wing.subtitle}`
+    : count === 0 ? 'Coming soon' : count === 1 ? '1 work' : `${count} works`;
 
   return (
     <group>

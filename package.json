@@ -11,7 +11,8 @@
     "photos:placeholders": "node scripts/make-placeholders.mjs",
     "photos:import": "node scripts/import-photos.mjs",
     "photos:scan": "node scripts/scan-drop.mjs",
-    "photos:hero": "node scripts/set-hero.mjs"
+    "photos:hero": "node scripts/set-hero.mjs",
+    "deploy": "next build && wrangler pages deploy out --project-name nyronparton --branch main --commit-dirty=true"
   },
   "dependencies": {
     "@react-three/drei": "^9.114.0",
@@ -31,6 +32,7 @@
     "@types/three": "^0.169.0",
     "puppeteer-core": "^23.11.1",
     "sharp": "^0.33.5",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "wrangler": "^4.147.0"
   }
 }

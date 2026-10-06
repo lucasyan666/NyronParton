@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import type { WingLayout } from '@/lib/layout';
 import { PulseChevrons } from './RoomPicker';
+import { TOUCH } from '@/lib/device';
 
 /**
  * The end of a wing. It rises over the last few steps toward the door: the
@@ -68,7 +69,7 @@ export function EndPanel({ progressRef, wing, next, onNext, onFoyer, light }: {
           Back to the foyer
         </button>
       </div>
-      {next && <p className="end-hint">or keep scrolling</p>}
+      {next && <p className="end-hint">{TOUCH ? 'or keep swiping up' : 'or keep scrolling'}</p>}
 
       <nav className="footer-links" aria-label="Contact and elsewhere">
         <a href="https://www.instagram.com/nyronparton" target="_blank" rel="noopener noreferrer">

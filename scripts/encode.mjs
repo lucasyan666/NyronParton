@@ -1,8 +1,9 @@
 /**
  * One encoder for every pipeline script.
  *
- * Emits two files per photograph:
+ * Emits three files per photograph:
  *   <id>.webp        full print, long edge MAX_EDGE, quality 82
+ *   <id>.mid.webp    MID_EDGE long edge, the print phones use (lib/device.ts)
  *   <id>.thumb.webp  ~THUMB_EDGE long edge, shown while the full decodes
  *
  * WebP over JPEG: ~30% smaller at the same visual quality, universally
@@ -15,19 +16,29 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 
 export const MAX_EDGE = 2048;
+export const MID_EDGE = 1280;
 export const THUMB_EDGE = 400;
 
-export async function encodePhoto(inPath, outDir, id) {
-  const image = sharp(inPath).rotate();
-  const meta = await image.metadata();
+/**
+ * `turn` (90, 180 or 270, clockwise) straightens a photograph whose file is
+ * sideways — typically a portrait frame from a film scanner, which writes no
+ * orientation. It is applied after the camera's own EXIF orientation.
+ */
+export async function encodePhoto(inPath, outDir, id, turn = 0) {
+  const upright = turn ? await sharp(inPath).rotate().toBuffer() : null;
+  const image = upright ? sharp(upright).rotate(turn) : sharp(inPath).rotate();
+  const meta = await sharp(inPath).metadata();
 
-  // rotate() is lazy, so swap dimensions for 90/270 EXIF orientations.
-  const turned = meta.orientation && meta.orientation >= 5;
+  // rotate() is lazy, so swap dimensions for 90/270 EXIF orientations, and
+  // again for a quarter turn of our own.
+  const exifTurned = !!meta.orientation && meta.orientation >= 5;
+  const turned = exifTurned !== (turn === 90 || turn === 270);
   const w = turned ? meta.height : meta.width;
   const h = turned ? meta.width : meta.height;
   if (!w || !h) throw new Error('no dimensions');
 
   const full = join(outDir, `${id}.webp`);
+  const mid = join(outDir, `${id}.mid.webp`);
   const thumb = join(outDir, `${id}.thumb.webp`);
 
   await image
@@ -35,6 +46,12 @@ export async function encodePhoto(inPath, outDir, id) {
     .resize(MAX_EDGE, MAX_EDGE, { fit: 'inside', withoutEnlargement: true })
     .webp({ quality: 82, effort: 4 })
     .toFile(full);
+
+  await image
+    .clone()
+    .resize(MID_EDGE, MID_EDGE, { fit: 'inside', withoutEnlargement: true })
+    .webp({ quality: 80, effort: 4 })
+    .toFile(mid);
 
   await image
     .clone()

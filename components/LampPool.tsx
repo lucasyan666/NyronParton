@@ -8,6 +8,7 @@ import { MOODS, FOYER_MOOD, type MoodSpec } from '@/lib/moods';
 import { createBeamMaterial } from '@/lib/beamMaterial';
 import { getActiveWing, getCameraZ } from '@/lib/cameraStore';
 import { isPredrawing } from '@/lib/warmup';
+import { LITE } from '@/lib/device';
 
 /**
  * Stage lights, as a fixed pool.
@@ -21,7 +22,8 @@ import { isPredrawing } from '@/lib/warmup';
  * the nearest works, faded, and struck on.
  */
 
-export const POOL = 5;
+/** Fixed for the life of the page (see above); fewer on a phone GPU. */
+export const POOL = LITE ? 3 : 5;
 /** Path distance at which a lamp strikes on, and the further one at which it goes dark. */
 const ON_AT = 6.5;
 const OFF_AT = 8.8;

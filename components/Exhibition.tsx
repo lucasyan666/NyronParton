@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import Lenis from 'lenis';
 import { HERO_SRC } from '@/data/exhibition';
 import {
+  ALL_PLACEMENTS,
   ARRIVE_BEFORE,
   DECISION_S,
   END_S,
@@ -27,6 +28,7 @@ import { Intro } from './Intro';
 import { RoomPicker } from './RoomPicker';
 import { EndPanel } from './EndPanel';
 import { Loader } from './Loader';
+import { CaptionSheet } from './CaptionSheet';
 
 /**
  * The 3D scene — three.js, the post-processing stack, troika — is the heavy
@@ -106,6 +108,15 @@ export function Exhibition() {
   const [navBusy, setNavBusy] = useState(false);
   const [fade, setFade] = useState<null | 'dark'>(null);
   const showStats = typeof window !== 'undefined' && window.location.search.includes('stats');
+  /** Portrait screens get the caption as a sheet; the scene makes the same call. */
+  const [portrait, setPortrait] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia('(orientation: portrait)');
+    const on = () => setPortrait(mq.matches);
+    on();
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
 
   /* ------------------------------------------------------------ scrolling */
 
@@ -520,12 +531,14 @@ export function Exhibition() {
   }, []);
 
   const lightRoom = !inFoyer && wing ? MOODS[wing.mood].light : false;
+  const held = selectedId ? ALL_PLACEMENTS.find((p) => p.photo.id === selectedId) ?? null : null;
   const nextLayout = wing ? WING_LAYOUTS[wing.index + 1] ?? null : null;
 
   return (
     <>
       <Scene
         onWarm={onWarm}
+        suggested={active == null ? pushTarget() : null}
         onStats={showStats ? setStats : undefined}
         targetS={targetS}
         teleport={teleport}
@@ -564,6 +577,8 @@ export function Exhibition() {
         onFoyer={backToFoyer}
         light={lightRoom}
       />
+
+      {portrait && held && <CaptionSheet placement={held} onClose={() => setSelectedId(null)} />}
 
       <div className={`fade ${fade ? 'is-on' : ''}`} aria-hidden />
 

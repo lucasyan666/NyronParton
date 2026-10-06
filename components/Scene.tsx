@@ -5,7 +5,9 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
   ALL_PLACEMENTS,
+  DECISION_S,
   EYE_HEIGHT,
+  FOYER,
   WING_LAYOUTS,
   inFoyerAt,
   pathFrame,
@@ -17,6 +19,7 @@ import { FOYER_MOOD, MOODS, type MoodSpec } from '@/lib/moods';
 import {
   getCameraZ,
   getInFoyer,
+  getSheetShare,
   publishCameraZ,
   publishRegion,
   setActiveWing,
@@ -30,6 +33,7 @@ import { Lighting } from './Lighting';
 import { FocusEffects } from './FocusEffects';
 import { Caption } from './Caption';
 import { Stats } from './Stats';
+import { LITE, TOUCH } from '@/lib/device';
 
 type Props = {
   /** Where the scroll says the camera should be, as path distance. */
@@ -46,6 +50,8 @@ type Props = {
   onFoyer: () => void;
   /** Fired once everything is built, compiled and uploaded. */
   onWarm?: () => void;
+  /** The room that scrolling on from the foyer leads into (touch screens look toward its door). */
+  suggested?: number | null;
   /** Perf line, twice a second, when ?stats is in the URL. */
   onStats?: (line: string) => void;
 };
@@ -64,22 +70,68 @@ const UPLOAD_MS_WALKING = 4;
 const PHOTO_TIMEOUT_S = 7;
 const WARM_CAP_S = 12;
 
+const smooth01 = (t: number) => {
+  const x = Math.max(0, Math.min(1, t));
+  return x * x * (3 - 2 * x);
+};
+
 const _eye = new THREE.Vector3();
 const _look = new THREE.Vector3();
+
+/** Vertical field of view: wider on a portrait screen, which is otherwise a slit. */
+const fovFor = (aspect: number) => (aspect >= 1 ? 64 : Math.min(84, 64 + (1 - aspect) * 40));
 
 /**
  * Where the camera should stand to face a given photo square-on: back off
  * along the frame's own normal, and rise to the frame's centre height.
  * Reuses module-level vectors — this runs every frame while focusing.
+ *
+ * On a portrait screen the caption is a sheet across the bottom, so the print
+ * must fit the space above it, in both directions (a landscape print on a
+ * phone is usually limited by width). The distance is capped by the room:
+ * stepping back through the opposite wall would show the building's outside.
  */
-function viewpointFor(p: Placement) {
+function viewpointFor(p: Placement, portrait: boolean, fov: number, aspect: number) {
   const [x, y, z] = p.position;
   const nx = Math.sin(p.rotationY);
   const nz = Math.cos(p.rotationY);
-  const dist = VIEW_DISTANCE + p.height * 0.6;
+  let dist = VIEW_DISTANCE + p.height * 0.6;
+  if (portrait) {
+    const t = Math.tan(THREE.MathUtils.degToRad(fov) / 2);
+    const above = 1 - getSheetShare();
+    const w = p.height * p.photo.aspect + 0.3;
+    const h = p.height + 0.3;
+    const fit = Math.max(h / 2 / (above * t * 0.92), w / 2 / (t * aspect * 0.92), 1.2);
+    const seg = WING_LAYOUTS[p.wing]?.rooms[p.roomIndex];
+    dist = Math.min(fit, seg ? seg.halfWidth * 2 - 0.35 : fit);
+  }
   _eye.set(x + nx * dist, y, z + nz * dist);
   _look.set(x, y, z);
   return { eye: _eye, look: _look };
+}
+
+/**
+ * Lens shift, for a portrait screen while a work is held: the print rides up
+ * into the space above the caption sheet. A shifted lens, not a tilted
+ * camera, so the print's edges stay square and the eye stays at a person's
+ * height. `shift` is in pixels; the field of view is widened to match, so
+ * the visible area stays the same size and only moves.
+ */
+function setLensShift(cam: THREE.PerspectiveCamera, w: number, h: number, fov: number, shift: number) {
+  if (shift < 0.5) {
+    if (cam.view?.enabled) cam.clearViewOffset();
+    if (cam.fov !== fov || Math.abs(cam.aspect - w / h) > 1e-6) {
+      cam.fov = fov;
+      cam.aspect = w / h;
+      cam.updateProjectionMatrix();
+    }
+    return;
+  }
+  const full = h + 2 * shift;
+  const t = Math.tan(THREE.MathUtils.degToRad(fov) / 2);
+  cam.fov = THREE.MathUtils.radToDeg(2 * Math.atan((t * full) / h));
+  cam.aspect = w / full;
+  cam.setViewOffset(w, full, 0, 2 * shift, w, h);
 }
 
 /**
@@ -109,8 +161,10 @@ function compileEverything(gl: THREE.WebGLRenderer, scene: THREE.Scene, camera: 
   return done;
 }
 
-function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnterWing, onNextWing, onFoyer, onWarm, onStats }: Props) {
+function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnterWing, onNextWing, onFoyer, onWarm, onStats, suggested }: Props) {
   const { camera, pointer, gl, scene } = useThree();
+  // Portrait: the caption becomes a sheet (Exhibition) and the camera adapts.
+  const portrait = useThree((s) => s.size.height > s.size.width);
   const walk = walkFor(active);
   const wing = active == null ? null : WING_LAYOUTS[active];
   // Plain value for everything that decides visibility in its own frame loop.
@@ -279,7 +333,7 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
   const tmpEye = useRef(new THREE.Vector3());
   const tmpLook = useRef(new THREE.Vector3());
 
-  useFrame((_, rawDelta) => {
+  useFrame((state, rawDelta) => {
     // Clamp the timestep: a tab switch or GC pause would otherwise turn into
     // a visible jump through exponential damping.
     const delta = Math.min(rawDelta, 0.05);
@@ -335,23 +389,85 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
     const bob = Math.sin(stride.current) * 0.022 * speed;
     const sway = Math.sin(stride.current * 0.5) * 0.02 * speed;
     const here = pathFrame(walk, smoothed.current);
-    const lat = pointer.x * 0.3 + sway;
-    tmpEye.current.set(here.x + here.rx * lat, EYE_HEIGHT + pointer.y * 0.18 + bob, here.z + here.rz * lat);
+    // A mouse looks around; a finger only walks (a swipe must not swing the view).
+    const px = TOUCH ? 0 : pointer.x;
+    const py = TOUCH ? 0 : pointer.y;
+    let lat = px * 0.3 + sway;
     const [ax, az] = pathPoint(walk, smoothed.current + 6.5);
-    const look = pointer.x * 2.6 + sway;
-    tmpLook.current.set(ax + here.rx * look, EYE_HEIGHT + pointer.y * 1.0 + bob * 0.5, az + here.rz * look);
+    const look = px * 2.6 + sway;
+    tmpLook.current.set(ax + here.rx * look, EYE_HEIGHT + py * 1.0 + bob * 0.5, az + here.rz * look);
+
+    /*
+     * On a touch screen nothing steers the head, and a portrait screen sees
+     * only a narrow slice of the corridor. So the head turns on its own: in a
+     * room, toward the next work while it is still a few steps ahead — the
+     * body easing away from that wall for a squarer view — letting go as you
+     * draw level, by which time the next work, on the other wall, takes over.
+     * In the foyer, toward the door that scrolling on leads to. The turn
+     * blends directions, not points: a work close beside you is a big turn.
+     */
+    const guide = TOUCH && !selected ? (portrait ? 0.85 : 0.45) : 0;
+    let turn = 0;
+    let tx = 0;
+    let ty = 0;
+    let tz = 0;
+    if (guide > 0 && wing) {
+      let bestW = 0;
+      for (const p of wing.order) {
+        const ds = p.focusS - smoothed.current;
+        if (ds < -0.2 || ds > 5) continue;
+        const w = smooth01((5 - ds) / 2.8) * smooth01((ds + 0.2) / 0.8);
+        if (w > bestW) {
+          bestW = w;
+          [tx, ty, tz] = p.position;
+        }
+      }
+      turn = guide * bestW;
+      if (turn > 0) lat -= Math.sign((tx - here.x) * here.rx + (tz - here.z) * here.rz) * 0.5 * turn;
+    } else if (guide > 0 && suggested != null && WING_LAYOUTS[suggested]) {
+      tx = WING_LAYOUTS[suggested].doorX;
+      ty = EYE_HEIGHT;
+      tz = -FOYER.depth;
+      turn = guide * smooth01((smoothed.current - (DECISION_S - 3.5)) / 3.5);
+    }
+    tmpEye.current.set(here.x + here.rx * lat, EYE_HEIGHT + py * 0.18 + bob, here.z + here.rz * lat);
+    if (turn > 0.001) {
+      const ex = tmpEye.current.x;
+      const ez = tmpEye.current.z;
+      let bx = tmpLook.current.x - ex;
+      let bz = tmpLook.current.z - ez;
+      let wx = tx - ex;
+      let wz = tz - ez;
+      const bl = Math.hypot(bx, bz) || 1;
+      const wl = Math.hypot(wx, wz) || 1;
+      bx /= bl; bz /= bl; wx /= wl; wz /= wl;
+      let dx = bx + (wx - bx) * turn;
+      let dz = bz + (wz - bz) * turn;
+      const dl = Math.hypot(dx, dz) || 1;
+      dx /= dl; dz /= dl;
+      tmpLook.current.x = ex + dx * 4;
+      tmpLook.current.z = ez + dz * 4;
+      tmpLook.current.y += (ty - tmpLook.current.y) * turn * 0.6;
+    }
+
+    // The lens for this screen: portrait field of view, shifted while held.
+    const W = state.size.width;
+    const H = state.size.height;
+    const cam = camera as THREE.PerspectiveCamera;
+    const fov = fovFor(W / Math.max(1, H));
+    setLensShift(cam, W, H, fov, portrait ? (focus.current * H * getSheetShare()) / 2 : 0);
 
     // Blend toward the artwork viewpoint; parallax fades as focus rises.
     if (selected) {
-      const { eye, look: target } = viewpointFor(selected);
+      const { eye, look: target } = viewpointFor(selected, portrait, fov, W / Math.max(1, H));
       focusPos.current.copy(target);
       focusTarget.current = focusPos.current;
       focusExtent.current = 0.5 * Math.hypot(selected.height * selected.photo.aspect, selected.height);
       const k = focus.current;
       const drift = 1 - k;
       tmpEye.current.lerp(eye, k);
-      tmpEye.current.x += pointer.x * 0.22 * drift;
-      tmpEye.current.y += pointer.y * 0.12 * drift;
+      tmpEye.current.x += px * 0.22 * drift;
+      tmpEye.current.y += py * 0.12 * drift;
       tmpLook.current.lerp(target, k);
     } else {
       focusTarget.current = null;
@@ -422,7 +538,8 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
         />
       ))}
 
-      {selected && <Caption placement={selected} amountRef={focus} />}
+      {/* On a portrait screen the caption is a sheet in the page (Exhibition). */}
+      {selected && !portrait && <Caption placement={selected} amountRef={focus} />}
 
       {onStats && <Stats onSample={onStats} />}
 
@@ -444,9 +561,13 @@ export function Scene(props: Props) {
     <Canvas
       // MSAA is wasted here: EffectComposer renders into its own buffer.
       gl={{ antialias: false, powerPreference: 'high-performance', stencil: false, depth: true }}
-      dpr={[1, 1.5]}
+      // Phones have 3x screens and the scene is lighter there: a little more resolution.
+      dpr={[1, LITE ? 1.75 : 1.5]}
       camera={{ fov: 64, near: 0.08, far: 160, position: [0, EYE_HEIGHT, 6] }}
-      style={{ position: 'fixed', inset: 0 }}
+      // Sized to the large viewport (see .stage), so a phone's toolbars
+      // sliding in and out never resize the canvas mid-walk.
+      className="stage"
+      resize={{ scroll: false, debounce: { scroll: 0, resize: 120 } }}
       onPointerMissed={() => props.onSelect(null)}
     >
       <color attach="background" args={[MOODS[FOYER_MOOD].fog]} />

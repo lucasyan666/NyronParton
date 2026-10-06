@@ -2,6 +2,7 @@
 
 import { WING_LAYOUTS, type WingLayout } from '@/lib/layout';
 import type { Room } from '@/data/exhibition';
+import { TOUCH } from '@/lib/device';
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -32,13 +33,14 @@ export function Hud({
   const inWing = !inFoyer && wing;
   const key = inWing ? `${wing.index}-${room?.roomIndex ?? 0}` : 'foyer';
 
+  // A phone has no keys and no Esc: swipe, tap, and tap again (or ×) to close.
   const hint = selected
-    ? 'Esc to return'
+    ? TOUCH ? 'Tap the photo again to return' : 'Esc to return'
     : inWing
-      ? 'Scroll or hold W to walk · click a work · H for the foyer'
+      ? TOUCH ? 'Swipe up to walk · tap a work' : 'Scroll or hold W to walk · click a work · H for the foyer'
       : n > 1
         ? ''
-        : 'Scroll or hold W to walk';
+        : TOUCH ? 'Swipe up to walk' : 'Scroll or hold W to walk';
 
   return (
     <div className={`hud ${selected ? 'is-held' : ''} ${visible ? '' : 'is-hidden'} ${light ? 'is-light' : ''} ${inWing ? '' : 'is-foyer'}`}>

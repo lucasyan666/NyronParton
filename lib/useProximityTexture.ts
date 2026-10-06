@@ -1,7 +1,8 @@
 'use client';
 
 import * as THREE from 'three';
-import { thumbOf } from '@/data/exhibition';
+import { midOf, thumbOf } from '@/data/exhibition';
+import { LITE } from '@/lib/device';
 
 /**
  * Photograph residency, in three steps, driven imperatively from each Frame's
@@ -19,8 +20,12 @@ import { thumbOf } from '@/data/exhibition';
  *
  * Every photograph has a small companion (`<name>.thumb.webp`, ~400px) that is
  * cheap enough to keep for every work in the show. Full prints are held only
- * near the camera.
+ * near the camera. On phones the "full" print is the 1280px step: a phone
+ * screen cannot show more, and it takes a third of the GPU memory.
  */
+
+/** The print to hold near the camera on this device. */
+const fullOf = (src: string) => (LITE ? midOf(src) : src);
 
 const resident = new Map<string, THREE.Texture>();
 const queued = new Map<string, THREE.Texture>();
@@ -107,20 +112,22 @@ export function prefetch(src: string) {
 
 /** Hold a reference to the full print and make sure both tiers are on their way. */
 export function request(src: string) {
-  refs.set(src, (refs.get(src) ?? 0) + 1);
+  const full = fullOf(src);
+  refs.set(full, (refs.get(full) ?? 0) + 1);
   load(thumbOf(src));
-  load(src);
+  load(full);
 }
 
 export function release(src: string) {
-  const n = (refs.get(src) ?? 1) - 1;
-  if (n <= 0) refs.delete(src);
-  else refs.set(src, n);
+  const full = fullOf(src);
+  const n = (refs.get(full) ?? 1) - 1;
+  if (n <= 0) refs.delete(full);
+  else refs.set(full, n);
 }
 
 /** Best texture already on the GPU for this photo: full, else thumb, else null. */
 export function peek(src: string): THREE.Texture | null {
-  return resident.get(src) ?? resident.get(thumbOf(src)) ?? null;
+  return resident.get(fullOf(src)) ?? resident.get(thumbOf(src)) ?? null;
 }
 
 /** Drop full-size textures nothing references. Thumbs are small; keep them. */
@@ -140,7 +147,7 @@ export function evictUnreferenced() {
  * (or confirmed missing) — for the loading screen.
  */
 export function warmSet(srcs: string[], full: number): () => number {
-  const urls = [...new Set([...srcs.map(thumbOf), ...srcs.slice(0, full)])];
+  const urls = [...new Set([...srcs.map(thumbOf), ...srcs.slice(0, full).map(fullOf)])];
   urls.forEach(load);
   return () => {
     if (!urls.length) return 1;

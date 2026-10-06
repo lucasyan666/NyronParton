@@ -10,6 +10,21 @@
  *     travel/
  *     loose.jpg …              files with no folder are dealt into rooms for you
  *
+ * A folder is a room even while it is empty: its door is in the foyer, marked
+ * "Coming soon", until photographs are dropped in and the scan is run again.
+ *
+ * Words for the works live in the room's room.json, keyed by filename:
+ *   { "medium": "35mm film",                     (optional, for every work)
+ *     "works": { "01.jpg": { "title", "caption", "year", "medium",
+ *                            "rotate": 90 } } }    (quarter turns, clockwise)
+ * Nothing is invented for a named room: a work with no title is labelled with
+ * the room's name and its number, with no caption; the year comes from the
+ * photograph's own metadata when it has one.
+ *
+ * Every photograph's file name comes from its content (drop-<hash>.webp), so
+ * a changed photograph always gets a new address: browsers and the service
+ * worker can keep photographs forever without ever showing a stale one.
+ *
  *   npm run photos:scan
  *   npm run photos:scan -- path/to/other/folder     (scan somewhere else)
  *
@@ -22,7 +37,8 @@
  * that do not name one take them in turn.
  */
 import { readdir, mkdir, stat, writeFile, readFile, rm } from 'node:fs/promises';
-import { join, parse } from 'node:path';
+import { basename, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { encodePhoto } from './encode.mjs';
 
 const SRC = process.argv[2] ?? 'drop';
@@ -31,6 +47,8 @@ const GEN = 'data/generated.json';
 const IMAGE = /\.(jpe?g|png|tiff?|webp|avif|heic|heif)$/i;
 /** Works per room inside a wing; rooms are balanced, never a lone print. */
 const PER_ROOM = 6;
+/** Bump when the encoding settings change, so every photograph gets a new address. */
+const ENCODE_VERSION = 1;
 const MOODS = ['concrete', 'noir', 'gallery'];
 
 /**
@@ -85,6 +103,15 @@ const CAPTIONS = [
   'Went up it for no reason, got a photograph out of it.',
 ];
 
+/** Content-addressed id: the same file always gets the same name, a changed one a new name. */
+async function idFor(path, used, variant = '') {
+  const hash = createHash('sha1').update(await readFile(path)).update(`encode-v${ENCODE_VERSION}${variant}`).digest('hex').slice(0, 10);
+  let id = `drop-${hash}`;
+  for (let k = 2; used.has(id); k++) id = `drop-${hash}-${k}`; // the same file dropped twice
+  used.add(id);
+  return id;
+}
+
 /** "02-black-and-white" → "Black and White" */
 function prettify(name) {
   const words = name.replace(/^\d+[\s._-]*/, '').replace(/[_-]+/g, ' ').trim().split(/\s+/);
@@ -120,7 +147,6 @@ const loose = entries
 const groups = [];
 for (const dir of entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name))) {
   const files = (await readdir(join(SRC, dir.name))).filter((f) => IMAGE.test(f)).sort();
-  if (!files.length) continue;
   groups.push({ folder: dir.name, files: files.map((f) => join(dir.name, f)), meta: (await readJson(join(SRC, dir.name, 'room.json'))) ?? {} });
 }
 
@@ -141,7 +167,7 @@ if (loose.length) {
 }
 
 if (!groups.length) {
-  console.error(`${SRC}/ has no images — drop some in (or folders of them) and run again.`);
+  console.error(`${SRC}/ has no folders or images — make a folder per room and run again.`);
   process.exit(1);
 }
 
@@ -157,24 +183,35 @@ let counter = 0;
 let before = 0;
 let after = 0;
 const wings = [];
+const used = new Set();
 
 for (const [w, group] of groups.entries()) {
+  const meta = group.meta;
+  const title = meta.title ?? (group.folder ? prettify(group.folder) : ROOM_TITLES[w % ROOM_TITLES.length]);
+  const named = !!group.folder;
+  const works = (named && meta.works) || {};
+
   const photos = [];
   for (const rel of group.files) {
-    const id = `drop-${String(++counter).padStart(3, '0')}`;
     const inPath = join(SRC, rel);
     try {
+      const own = works[basename(rel)] ?? {};
+      const turn = [90, 180, 270].includes(own.rotate) ? own.rotate : 0;
+      // The turn is part of the address: a straightened photograph is a new file.
+      const id = await idFor(inPath, used, turn ? `-r${turn}` : '');
       before += (await stat(inPath)).size;
-      const r = await encodePhoto(inPath, OUT, id);
+      const r = await encodePhoto(inPath, OUT, id, turn);
       after += r.bytes;
-      const n = counter - 1;
+      const n = counter++;
+      const number = String(photos.length + 1).padStart(2, '0');
       photos.push({
         id,
         src: `/photos/${id}.webp`,
-        title: TITLES[n % TITLES.length],
-        caption: CAPTIONS[n % CAPTIONS.length],
-        year: r.year ?? '2025',
-        medium: '35mm film',
+        // A named room never gets invented words; a test drop gets placeholders.
+        title: own.title ?? (named ? `${title} ${number}` : TITLES[n % TITLES.length]),
+        caption: own.caption ?? (named ? '' : CAPTIONS[n % CAPTIONS.length]),
+        year: own.year ?? meta.year ?? r.year ?? (named ? undefined : '2025'),
+        medium: own.medium ?? meta.medium ?? (named ? undefined : '35mm film'),
         aspect: r.aspect,
         // keep the source name so the photographer can find the file
         source: rel,
@@ -183,17 +220,24 @@ for (const [w, group] of groups.entries()) {
       console.error(`  skipped ${rel}: ${err.message}`);
     }
   }
-  if (!photos.length) continue;
+  // A loose-file room is a test drop and gets a placeholder name if it has
+  // no photographs to show. A folder is a real room, kept even when empty.
+  if (!photos.length && !group.folder) continue;
 
-  const meta = group.meta;
-  const title = meta.title ?? (group.folder ? prettify(group.folder) : ROOM_TITLES[w % ROOM_TITLES.length]);
-  const statement = meta.statement ?? meta.subtitle ?? ROOM_STATEMENTS[w % ROOM_STATEMENTS.length];
+  // Placeholder statements are for test drops only: a room the photographer
+  // has named gets the subtitle from its room.json, or none (the foyer door
+  // then shows how many works it holds).
+  const statement = (meta.statement ?? meta.subtitle ?? (group.folder ? '' : ROOM_STATEMENTS[w % ROOM_STATEMENTS.length])) || undefined;
   const mood = MOODS.includes(meta.mood) ? meta.mood : MOODS[w % MOODS.length];
 
   // Balanced rooms: 7 works make rooms of 4 and 3, never 6 and 1.
   const roomCount = Math.ceil(photos.length / PER_ROOM);
-  const size = Math.ceil(photos.length / roomCount);
+  const size = Math.ceil(photos.length / Math.max(1, roomCount));
   const rooms = [];
+  if (!photos.length) {
+    // Empty for now: one bare room behind the door.
+    rooms.push({ id: `${slug(title)}-1`, title, statement, layout: 'corridor', width: 2.2, spacing: 4.4, photos: [] });
+  }
   for (let r = 0; r < roomCount; r++) {
     const slice = photos.slice(r * size, (r + 1) * size);
     if (!slice.length) continue;
@@ -216,7 +260,7 @@ for (const [w, group] of groups.entries()) {
   wings.push({
     id: slug(title),
     title,
-    subtitle: meta.subtitle ?? statement,
+    subtitle: (meta.subtitle ?? statement) || undefined,
     mood,
     rooms,
   });

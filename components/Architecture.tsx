@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { LITE } from '@/lib/device';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { MeshReflectorMaterial, Text } from '@react-three/drei';
@@ -357,6 +358,10 @@ export const Architecture = memo(function Architecture({ onEnter, onNext, onFoye
           fixed resolution: changing it rebuilds the material mid-walk. */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[floor.x, 0, floor.z]}>
         <planeGeometry args={[floor.w, floor.d]} />
+        {LITE ? (
+          // Phones: the same dark polished floor, lit but not mirrored.
+          <meshStandardMaterial color="#1f1d1a" roughness={0.42} metalness={0.12} />
+        ) : (
         <MeshReflectorMaterial
           resolution={384}
           blur={FLOOR_BLUR}
@@ -371,6 +376,7 @@ export const Architecture = memo(function Architecture({ onEnter, onNext, onFoye
           color="#1f1d1a"
           metalness={0.08}
         />
+        )}
       </mesh>
 
       <Foyer maps={boards!} onEnter={onEnter} />

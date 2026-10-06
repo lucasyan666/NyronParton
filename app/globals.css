@@ -43,6 +43,23 @@ body {
 }
 
 a { color: inherit; text-decoration: none; }
+
+/* Lenis is stopped while loading and while a work is held. On a phone,
+   stopping it is not enough to halt a native swipe: the page must not scroll. */
+html.lenis-stopped { overflow: hidden; }
+
+/* The 3D canvas. Sized to the LARGE viewport, not the visible one: as a
+   phone's toolbars slide in and out the visible viewport changes height every
+   frame, and a canvas tracking it would rebuild its buffers mid-swipe. When
+   the toolbars show, they simply cover its bottom edge. (R3F writes inline
+   size styles, hence !important.) */
+.stage {
+  position: fixed !important;
+  top: 0; left: 0;
+  width: 100% !important;
+  height: 100vh !important;
+  height: 100lvh !important;
+}
 button { font: inherit; color: inherit; }
 
 :focus-visible {
@@ -493,6 +510,52 @@ button { font: inherit; color: inherit; }
   color: #c9c2b5;
 }
 
+/* ---------------------------------- Caption sheet (portrait screens)
+   The wall label's portrait form: it swings up from the bottom edge like a
+   card being turned up, then its lines rise in one after another. */
+
+.sheet {
+  position: fixed;
+  left: 12px; right: 12px;
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  z-index: 26;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 18px 52px 20px 20px;
+  background: rgba(22, 21, 20, 0.94);
+  border: 1px solid rgba(236, 230, 218, 0.1);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  transform-origin: 50% 100%;
+  animation: sheet-in 640ms var(--ease) both;
+}
+.sheet > * { animation: sheet-line 560ms var(--ease) both; }
+.sheet > .label-meta { animation-delay: 150ms; }
+.sheet > .label-title { animation-delay: 210ms; font-size: 26px; }
+.sheet > .label-rule { animation-delay: 300ms; transform-origin: left; }
+.sheet > .label-caption { animation-delay: 360ms; }
+.sheet-close {
+  position: absolute;
+  top: 8px; right: 8px;
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  border: 0; border-radius: 50%;
+  background: rgba(236, 230, 218, 0.08);
+  color: var(--ink);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  animation: none;
+}
+@keyframes sheet-in {
+  from { opacity: 0; transform: perspective(900px) translateY(40px) rotateX(-62deg); }
+  to   { opacity: 1; transform: perspective(900px) translateY(0) rotateX(0); }
+}
+@keyframes sheet-line {
+  from { opacity: 0; transform: translateY(10px) rotateX(-40deg); }
+  to   { opacity: 1; transform: none; }
+}
+
 /* ---------------------------------- Pulsing chevrons (DOM)
    Three small chevrons with a pulse running toward the arrowhead — the same
    gesture as the arrows on the gallery floor, so the two read as one idea. */
@@ -873,6 +936,24 @@ button { font: inherit; color: inherit; }
   .hero-copy { bottom: 16vh; }
   .intro-cue { display: none; }
   .hud-room { bottom: 64px; }
+}
+
+/* Phones: one line of chrome at the top; the picker owns the foyer's floor. */
+@media (max-width: 600px) {
+  .hud-top { padding: 14px 18px; }
+  .hud-mark { font-size: 21px; white-space: nowrap; }
+  .hud-sub { display: none; }
+  .hud-room { left: 18px; }
+  .hud.is-foyer .hud-room { display: none; }
+  .hud-progress { right: 10px; }
+  .hud-bottom { padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); }
+  .picker { width: calc(100vw - 24px); }
+}
+
+/* Portrait: while a work is held, the caption sheet owns the bottom. */
+@media (orientation: portrait) {
+  .hud.is-held .hud-room,
+  .hud.is-held .hud-bottom { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

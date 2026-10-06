@@ -32,6 +32,9 @@ class Fallback extends Component<{ children: ReactNode }, { failed: boolean }> {
 
 /**
  * Decide once, on mount, whether this device gets the walk or the flat show.
+ * Phones and tablets get the walk (lighter, see lib/device.ts). The flat
+ * gallery is for visitors who ask for reduced motion, browsers without
+ * WebGL 2, and — through the error boundary — any device where the 3D fails.
  *
  * Deliberately no probe context. Creating a WebGL context just to test for
  * one is synchronous and, on software GL, can block the main thread for the
@@ -44,12 +47,9 @@ export function Gate() {
 
   useEffect(() => {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const narrow = window.matchMedia('(max-width: 820px)').matches;
-    const coarse = window.matchMedia('(pointer: coarse)').matches;
-    const weak = (navigator.hardwareConcurrency ?? 4) <= 4;
     const hasApi = typeof WebGL2RenderingContext !== 'undefined';
 
-    setVerdict(!hasApi || reduced || (narrow && coarse) || (coarse && weak) ? 'flat' : '3d');
+    setVerdict(!hasApi || reduced ? 'flat' : '3d');
   }, []);
 
   if (verdict === 'pending') return <LoaderView progress={0.02} />;

@@ -1,12 +1,16 @@
 /* Nyron — service worker.
  *
- * Photographs and fonts are immutable once published (the pipeline writes new
- * ids for new images), so they are cache-first. Built JS/CSS is content-hashed
- * by Next, so it is too. Pages are network-first so a deploy is seen at once,
- * with the cached shell as the offline fallback.
+ * Content-addressed files never change under the same name, so they are
+ * cache-first: built JS/CSS (hashed by Next), the room photographs (named
+ * drop-<hash> by the scan) and the fonts. Anything else under /photos/ — the
+ * landing photograph — can be replaced under the same name, so it is served
+ * from the cache at once and refreshed behind it for the next visit. Pages
+ * are network-first so a deploy is seen at once, with the cached shell as the
+ * offline fallback.
  */
-const VERSION = 'nyron-v1';
-const IMMUTABLE = /^\/(photos|fonts)\/|^\/_next\/static\//;
+const VERSION = 'nyron-v2';
+const IMMUTABLE = /^\/(_next\/static\/|fonts\/|photos\/drop-[0-9a-f]{10})/;
+const REFRESH = /^\/photos\//;
 
 self.addEventListener('install', (e) => {
   e.waitUntil(self.skipWaiting());
@@ -36,6 +40,16 @@ self.addEventListener('fetch', (e) => {
         return res;
       }),
     );
+    return;
+  }
+
+  if (REFRESH.test(url.pathname)) {
+    const fresh = fetch(req).then(async (res) => {
+      if (res.ok) await (await caches.open(VERSION)).put(req, res.clone());
+      return res;
+    });
+    e.waitUntil(fresh.then(() => undefined, () => undefined));
+    e.respondWith(caches.match(req).then((hit) => hit || fresh));
     return;
   }
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { WING_LAYOUTS } from '@/lib/layout';
+import { TOUCH } from '@/lib/device';
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -49,7 +50,15 @@ export function RoomPicker({ visible, active, next, onEnter }: {
         ))}
       </div>
       <span className="picker-hint">
-        {nextTitle ? (
+        {TOUCH ? (
+          nextTitle ? (
+            <>
+              Keep swiping up for <em>{nextTitle}</em>, or tap a room
+            </>
+          ) : (
+            <>Tap a room</>
+          )
+        ) : nextTitle ? (
           <>
             Keep scrolling for <em>{nextTitle}</em>, or press 1–{n}
           </>
