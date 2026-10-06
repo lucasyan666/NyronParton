@@ -945,10 +945,53 @@ button { font: inherit; color: inherit; }
   .hud-sub { display: none; }
   .hud-room { left: 18px; }
   .hud.is-foyer .hud-room { display: none; }
-  .hud-progress { right: 10px; }
+  .hud-progress { right: auto; left: 8px; }
   .hud-bottom { padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); }
   .picker { width: calc(100vw - 24px); }
 }
+
+/* ---------------------------------- Phone walk pad
+   Right-hand side, a little above the middle: under the thumb, and clear of
+   the room picker and end panel, which own the bottom of the screen. */
+
+.walkpad {
+  position: fixed;
+  right: 14px; top: 45%;
+  z-index: 24;
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  opacity: 0;
+  transform: translate(18px, -50%);
+  pointer-events: none;
+  transition: opacity 320ms ease, transform 460ms var(--ease);
+}
+.walkpad.is-on { opacity: 1; transform: translate(0, -50%); pointer-events: auto; }
+.walk-btn, .look-toggle {
+  appearance: none;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(236, 230, 218, 0.24);
+  background: rgba(18, 17, 16, 0.6);
+  color: var(--ink);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+.walk-btn { width: 60px; height: 60px; }
+.walk-btn svg { width: 24px; height: 24px; }
+.walk-btn.is-down {
+  background: rgba(224, 102, 61, 0.42);
+  border-color: rgba(224, 102, 61, 0.85);
+  transform: scale(0.94);
+}
+.look-toggle { width: 42px; height: 42px; margin-bottom: 4px; color: var(--ink-dim); }
+.look-toggle svg { width: 22px; height: 22px; }
+.look-toggle.is-on { color: var(--accent); border-color: rgba(224, 102, 61, 0.7); }
 
 /* Portrait: while a work is held, the caption sheet owns the bottom. */
 @media (orientation: portrait) {

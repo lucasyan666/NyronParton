@@ -53,7 +53,7 @@ export function RoomPicker({ visible, active, next, onEnter }: {
         {TOUCH ? (
           nextTitle ? (
             <>
-              Keep swiping up for <em>{nextTitle}</em>, or tap a room
+              Hold ▲ for <em>{nextTitle}</em>, or tap a room
             </>
           ) : (
             <>Tap a room</>

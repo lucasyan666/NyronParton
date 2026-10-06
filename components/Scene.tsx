@@ -34,6 +34,7 @@ import { FocusEffects } from './FocusEffects';
 import { Caption } from './Caption';
 import { Stats } from './Stats';
 import { LITE, TOUCH } from '@/lib/device';
+import { getMotion, recenterMotion } from '@/lib/motion';
 
 type Props = {
   /** Where the scroll says the camera should be, as path distance. */
@@ -69,6 +70,11 @@ const UPLOAD_MS_WALKING = 4;
  */
 const PHOTO_TIMEOUT_S = 7;
 const WARM_CAP_S = 12;
+
+const UP = new THREE.Vector3(0, 1, 0);
+/** Damp an angle along the short way round. */
+const dampAngle = (from: number, to: number, rate: number, dt: number) =>
+  from + Math.atan2(Math.sin(to - from), Math.cos(to - from)) * (1 - Math.exp(-rate * dt));
 
 const smooth01 = (t: number) => {
   const x = Math.max(0, Math.min(1, t));
@@ -245,6 +251,56 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
 
   /* ------------------------------------------------------------- camera */
 
+  /*
+   * Looking around on a phone: the head's own turn on top of the walk —
+   * from the phone's motion sensor, plus a finger drag (which eases back to
+   * centre when you let go). Applied after the walk's look, so it answers at
+   * once instead of through the walk's slow damping.
+   */
+  const head = useRef({ yaw: 0, pitch: 0 });
+  /** How strongly the head is turned toward the nearest work (eased, see the frame loop). */
+  const guideW = useRef(0);
+  const drag = useRef({ yaw: 0, pitch: 0, held: false });
+  useEffect(() => {
+    if (!TOUCH) return;
+    const el = gl.domElement;
+    let id = -1;
+    let x0 = 0;
+    let y0 = 0;
+    let yaw0 = 0;
+    let pitch0 = 0;
+    const down = (e: PointerEvent) => {
+      if (id !== -1) return;
+      id = e.pointerId;
+      x0 = e.clientX;
+      y0 = e.clientY;
+      yaw0 = drag.current.yaw;
+      pitch0 = drag.current.pitch;
+      drag.current.held = true;
+    };
+    const move = (e: PointerEvent) => {
+      if (e.pointerId !== id) return;
+      // Drag the room: pull it right and you turn left.
+      drag.current.yaw = yaw0 + (e.clientX - x0) * 0.0065;
+      drag.current.pitch = Math.max(-0.6, Math.min(0.6, pitch0 + (e.clientY - y0) * 0.0045));
+    };
+    const up = (e: PointerEvent) => {
+      if (e.pointerId !== id) return;
+      id = -1;
+      drag.current.held = false;
+    };
+    el.addEventListener('pointerdown', down);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    return () => {
+      el.removeEventListener('pointerdown', down);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+    };
+  }, [gl]);
+
   // Live look-at target, damped alongside position so turns feel like a head
   // turning rather than a cut.
   const lookAt = useRef(new THREE.Vector3(0, EYE_HEIGHT, -8));
@@ -315,6 +371,8 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
       camera: () => ({
         p: camera.position.toArray(),
         look: lookAt.current.toArray(),
+        // Where the camera actually faces, head turn included.
+        dir: camera.getWorldDirection(new THREE.Vector3()).toArray(),
         z: getCameraZ(),
         selected: selectedId,
         active,
@@ -369,6 +427,10 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
       smoothed.current = targetS.current;
       prevZ.current = smoothed.current;
       snap = true;
+      // A new room: whichever way the phone faces becomes straight ahead.
+      recenterMotion();
+      head.current.yaw = 0;
+      head.current.pitch = 0;
     } else if (!selected) {
       // While a work is held the walk position is pinned, so Escape returns
       // you exactly where you were.
@@ -406,7 +468,14 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
      * In the foyer, toward the door that scrolling on leads to. The turn
      * blends directions, not points: a work close beside you is a big turn.
      */
-    const guide = TOUCH && !selected ? (portrait ? 0.85 : 0.45) : 0;
+    // With the motion sensor on, the visitor turns their own head while
+    // walking; once they stop, the head still turns to the work in front of
+    // them, and the phone's own turn adds to that.
+    const motion = getMotion();
+    const sensing = TOUCH && motion.on && motion.fresh;
+    const guideTo = !TOUCH || selected ? 0 : sensing ? (speed < 0.06 ? 0.7 : 0) : portrait ? 0.85 : 0.45;
+    guideW.current = THREE.MathUtils.damp(guideW.current, guideTo, 2.5, delta);
+    const guide = guideW.current;
     let turn = 0;
     let tx = 0;
     let ty = 0;
@@ -487,6 +556,23 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
       lookAt.current.z = THREE.MathUtils.damp(lookAt.current.z, tmpLook.current.z, posSpeed, delta);
     }
     camera.lookAt(lookAt.current);
+
+    if (TOUCH) {
+      if (!drag.current.held) {
+        drag.current.yaw = THREE.MathUtils.damp(drag.current.yaw, 0, 1.4, delta);
+        drag.current.pitch = THREE.MathUtils.damp(drag.current.pitch, 0, 1.4, delta);
+      }
+      const wantYaw = (sensing ? motion.yaw : 0) + drag.current.yaw;
+      const wantPitch = Math.max(-0.75, Math.min(0.75, (sensing ? motion.pitch : 0) + drag.current.pitch));
+      head.current.yaw = dampAngle(head.current.yaw, wantYaw, 16, delta);
+      head.current.pitch = THREE.MathUtils.damp(head.current.pitch, wantPitch, 16, delta);
+      // Steady while a work is held: the framing is the point then.
+      const free = 1 - focus.current;
+      if (free > 0.001) {
+        camera.rotateOnWorldAxis(UP, head.current.yaw * free);
+        camera.rotateX(head.current.pitch * free);
+      }
+    }
 
     prevZ.current = smoothed.current;
 

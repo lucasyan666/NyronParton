@@ -29,6 +29,9 @@ import { RoomPicker } from './RoomPicker';
 import { EndPanel } from './EndPanel';
 import { Loader } from './Loader';
 import { CaptionSheet } from './CaptionSheet';
+import { WalkPad } from './WalkPad';
+import { TOUCH } from '@/lib/device';
+import { enableMotion, subscribeMotion } from '@/lib/motion';
 
 /**
  * The 3D scene — three.js, the post-processing stack, troika — is the heavy
@@ -49,6 +52,10 @@ if (typeof window !== 'undefined' && 'scrollRestoration' in history) history.scr
 
 /** How much forward scrolling at a dead end carries you on to the next room. */
 const PUSH_PX = 850;
+/** Walking pace with a key or the phone's ▲ held: px of scroll per second (~4.6 m/s). */
+const WALK_PX_S = 600;
+/** Where a tap on ▲ / ▼ stops: a little short of a work, so it is ahead of you, in view. */
+const STOP_SHORT = 1.2;
 
 const WINGS_N = WING_LAYOUTS.length;
 /** With a single wing there is nothing to choose: walk straight in. */
@@ -103,6 +110,8 @@ export function Exhibition() {
   const atEndSince = useRef<number | null>(null);
   /** -1, 0 or 1: the held walk key. */
   const walking = useRef(0);
+  /** Current walking pace (px/s), eased toward `walking`; zeroed when a glide takes over. */
+  const walkSpeed = useRef(0);
   /** A door transition is under way; ignore further navigation until done. */
   const navigating = useRef(false);
   const [navBusy, setNavBusy] = useState(false);
@@ -110,6 +119,9 @@ export function Exhibition() {
   const showStats = typeof window !== 'undefined' && window.location.search.includes('stats');
   /** Portrait screens get the caption as a sheet; the scene makes the same call. */
   const [portrait, setPortrait] = useState(false);
+  /** Looking around by moving the phone (lib/motion). */
+  const [motion, setMotion] = useState(false);
+  useEffect(() => subscribeMotion(setMotion), []);
   useEffect(() => {
     const mq = window.matchMedia('(orientation: portrait)');
     const on = () => setPortrait(mq.matches);
@@ -203,7 +215,9 @@ export function Exhibition() {
      * room through its door to the next. The arrow on screen fills as it
      * builds. Scrolling back resets it.
      */
-    lenis.on('virtual-scroll', ({ deltaY }: { deltaY: number }) => {
+    lenis.on('virtual-scroll', ({ deltaY, event }: { deltaY: number; event: Event }) => {
+      // On a phone the walk is the ▲ ▼ pad; a swipe looks around instead.
+      if (TOUCH && event.type.startsWith('touch')) return;
       if (!readyRef.current || navigating.current || selectedRef.current) return;
       if (deltaY < 0) { push.current = 0; setPushCue(0); return; }
       addPush(deltaY);
@@ -392,6 +406,9 @@ export function Exhibition() {
       lenis.start();
     }
     applyScroll.current?.();
+    // iOS only lets a page ask for the motion sensor in answer to a tap, so
+    // the first tap anywhere asks (Android simply switches it on).
+    if (TOUCH) document.addEventListener('touchend', () => void enableMotion(), { once: true });
   }, []);
 
   /** The hero's Enter: into the foyer, to the doors. */
@@ -400,6 +417,51 @@ export function Exhibition() {
     const lenis = lenisRef.current;
     if (!lenis) return;
     lenis.scrollTo(scrollForS(INITIAL_WING == null ? DECISION_S : 0.5), { duration: 1.8, easing: easeInOutCubic });
+  }, []);
+
+  /* ------------------------------------------------------------ the phone */
+
+  /**
+   * A tap on ▲ / ▼: glide to the next (or previous) work, stopping a little
+   * short so it is ahead of you, in view. Past the last work it steps on; at
+   * a dead end each tap is a push toward the next room.
+   */
+  const tapStep = useCallback((dir: -1 | 1) => {
+    const lenis = lenisRef.current;
+    if (!lenis || !readyRef.current || navigating.current || selectedRef.current) return;
+    const z = getCameraZ();
+    const a = activeRef.current;
+    const order = a == null ? [] : WING_LAYOUTS[a].order;
+    if (dir > 0 && lenis.limit - lenis.scroll < 40) {
+      addPush(PUSH_PX / 3 + 1);
+      return;
+    }
+    // A glide replaces any walking still easing to a stop (it would cancel it).
+    walkSpeed.current = 0;
+    const next = dir > 0
+      ? order.find((p) => p.focusS - STOP_SHORT > z + 0.3)
+      : [...order].reverse().find((p) => p.focusS - STOP_SHORT < z - 0.3);
+    if (next) lenis.scrollTo(scrollForS(next.focusS - STOP_SHORT), { duration: 1.1, easing: easeInOutCubic });
+    else lenis.scrollTo(lenis.scroll + dir * 2.2 * PX_PER_M, { duration: 0.9, easing: easeInOutCubic });
+  }, [addPush]);
+
+  const holdWalk = useCallback((dir: -1 | 0 | 1) => {
+    walking.current = dir;
+  }, []);
+
+  /*
+   * On a phone a swipe does not scroll the page: walking is the pad, and a
+   * finger drag looks around (Scene). The caption sheet may still scroll its
+   * own text if it is long.
+   */
+  useEffect(() => {
+    if (!TOUCH) return;
+    const hold = (e: TouchEvent) => {
+      if ((e.target as Element | null)?.closest?.('.sheet')) return;
+      e.preventDefault();
+    };
+    document.addEventListener('touchmove', hold, { passive: false });
+    return () => document.removeEventListener('touchmove', hold);
   }, []);
 
   /* -------------------------------------------------------------- keyboard */
@@ -416,17 +478,27 @@ export function Exhibition() {
    */
   useEffect(() => {
     let raf = 0;
-    const step = () => {
+    let last = performance.now();
+    const step = (now: number) => {
+      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      last = now;
       const lenis = lenisRef.current;
       if (lenis) {
         const atEnd = readyRef.current && !navigating.current && lenis.limit - lenis.scroll < 40;
         if (!atEnd) atEndSince.current = null;
         else if (atEndSince.current == null) atEndSince.current = performance.now();
       }
-      if (lenis && walking.current !== 0 && !navigating.current) {
-        lenis.scrollTo(lenis.scroll + walking.current * 11, { immediate: true });
-        // Holding W at a dead end pushes on, like scrolling does.
-        if (walking.current > 0) addPush(14);
+      // Held walking (W / ↑, or the phone's ▲ ▼) eases in and out, at the
+      // same pace whatever the frame rate.
+      const want = navigating.current || selectedRef.current ? 0 : walking.current * WALK_PX_S;
+      let speed = walkSpeed.current;
+      speed += (want - speed) * Math.min(1, dt * 7);
+      if (want === 0 && Math.abs(speed) < 4) speed = 0;
+      walkSpeed.current = speed;
+      if (lenis && speed !== 0) {
+        lenis.scrollTo(lenis.scroll + speed * dt, { immediate: true });
+        // Walking on at a dead end pushes on, like scrolling does.
+        if (walking.current > 0) addPush(speed * dt);
       }
       // A push that is not kept up drains away.
       if (push.current > 0 && performance.now() - lastPush.current > 700) {
@@ -562,6 +634,7 @@ export function Exhibition() {
         selected={!!selectedId}
         visible={chromeVisible}
         light={lightRoom}
+        motion={motion}
       />
       <RoomPicker
         visible={chromeVisible && inFoyer && WINGS_N > 1 && !selectedId && !navBusy}
@@ -579,6 +652,10 @@ export function Exhibition() {
       />
 
       {portrait && held && <CaptionSheet placement={held} onClose={() => setSelectedId(null)} />}
+
+      {TOUCH && (
+        <WalkPad visible={chromeVisible && !selectedId && !navBusy && !fade} onHold={holdWalk} onTap={tapStep} />
+      )}
 
       <div className={`fade ${fade ? 'is-on' : ''}`} aria-hidden />
 

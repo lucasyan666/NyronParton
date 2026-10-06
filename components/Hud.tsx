@@ -14,6 +14,7 @@ export function Hud({
   selected,
   visible,
   light,
+  motion = false,
 }: {
   /** The chosen wing, or null while choosing. */
   wing: WingLayout | null;
@@ -28,19 +29,23 @@ export function Hud({
   visible: boolean;
   /** Pale room: dark ink. */
   light: boolean;
+  /** Phone: looking around by moving the phone is on. */
+  motion?: boolean;
 }) {
   const n = WING_LAYOUTS.length;
   const inWing = !inFoyer && wing;
   const key = inWing ? `${wing.index}-${room?.roomIndex ?? 0}` : 'foyer';
 
-  // A phone has no keys and no Esc: swipe, tap, and tap again (or ×) to close.
+  // A phone has no keys and no Esc: the ▲ ▼ pad walks, the phone (or a
+  // finger) looks, a tap opens a work and tapping it again (or ×) closes it.
+  const look = motion ? 'move your phone to look' : 'drag to look';
   const hint = selected
     ? TOUCH ? 'Tap the photo again to return' : 'Esc to return'
     : inWing
-      ? TOUCH ? 'Swipe up to walk · tap a work' : 'Scroll or hold W to walk · click a work · H for the foyer'
+      ? TOUCH ? `Hold ▲ to walk · ${look} · tap a work` : 'Scroll or hold W to walk · click a work · H for the foyer'
       : n > 1
         ? ''
-        : TOUCH ? 'Swipe up to walk' : 'Scroll or hold W to walk';
+        : TOUCH ? `Hold ▲ to walk · ${look}` : 'Scroll or hold W to walk';
 
   return (
     <div className={`hud ${selected ? 'is-held' : ''} ${visible ? '' : 'is-hidden'} ${light ? 'is-light' : ''} ${inWing ? '' : 'is-foyer'}`}>

@@ -69,7 +69,7 @@ export function EndPanel({ progressRef, wing, next, onNext, onFoyer, light }: {
           Back to the foyer
         </button>
       </div>
-      {next && <p className="end-hint">{TOUCH ? 'or keep swiping up' : 'or keep scrolling'}</p>}
+      {next && <p className="end-hint">{TOUCH ? 'or hold ▲' : 'or keep scrolling'}</p>}
 
       <nav className="footer-links" aria-label="Contact and elsewhere">
         <a href="https://www.instagram.com/nyronparton" target="_blank" rel="noopener noreferrer">
