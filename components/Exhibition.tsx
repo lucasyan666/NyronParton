@@ -30,6 +30,8 @@ import { EndPanel } from './EndPanel';
 import { Loader } from './Loader';
 import { CaptionSheet } from './CaptionSheet';
 import { WalkPad } from './WalkPad';
+import { DebugPanel } from './DebugPanel';
+import { markWarm } from '@/lib/warmup';
 import { TOUCH } from '@/lib/device';
 import { enableMotion, subscribeMotion } from '@/lib/motion';
 
@@ -117,6 +119,7 @@ export function Exhibition() {
   const [navBusy, setNavBusy] = useState(false);
   const [fade, setFade] = useState<null | 'dark'>(null);
   const showStats = typeof window !== 'undefined' && window.location.search.includes('stats');
+  const debug = typeof window !== 'undefined' && window.location.search.includes('debug');
   /** Portrait screens get the caption as a sheet; the scene makes the same call. */
   const [portrait, setPortrait] = useState(false);
   /** Looking around by moving the phone (lib/motion). */
@@ -171,6 +174,10 @@ export function Exhibition() {
       duration: 1.5,
       easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
       touchMultiplier: 1.6,
+      // On a phone the walk is the ▲ ▼ pad, so Lenis must not answer touches
+      // at all: left to itself it stops any glide in progress — into the
+      // foyer, on to the next work — the moment a finger moves on the screen.
+      virtualScroll: (d) => !(TOUCH && d.event.type.startsWith('touch')),
     });
     lenisRef.current = lenis;
     // Nothing moves until the gallery is warm; the loading screen is up.
@@ -215,9 +222,7 @@ export function Exhibition() {
      * room through its door to the next. The arrow on screen fills as it
      * builds. Scrolling back resets it.
      */
-    lenis.on('virtual-scroll', ({ deltaY, event }: { deltaY: number; event: Event }) => {
-      // On a phone the walk is the ▲ ▼ pad; a swipe looks around instead.
-      if (TOUCH && event.type.startsWith('touch')) return;
+    lenis.on('virtual-scroll', ({ deltaY }: { deltaY: number }) => {
       if (!readyRef.current || navigating.current || selectedRef.current) return;
       if (deltaY < 0) { push.current = 0; setPushCue(0); return; }
       addPush(deltaY);
@@ -407,8 +412,10 @@ export function Exhibition() {
     }
     applyScroll.current?.();
     // iOS only lets a page ask for the motion sensor in answer to a tap, so
-    // the first tap anywhere asks (Android simply switches it on).
-    if (TOUCH) document.addEventListener('touchend', () => void enableMotion(), { once: true });
+    // the first tap anywhere asks (Android simply switches it on). A click,
+    // not a touchend: a click is always a gesture iOS honours, and the tap it
+    // belongs to still does what it was for.
+    if (TOUCH) document.addEventListener('click', () => void enableMotion(), { once: true, capture: true });
   }, []);
 
   /** The hero's Enter: into the foyer, to the doors. */
@@ -420,6 +427,58 @@ export function Exhibition() {
   }, []);
 
   /* ------------------------------------------------------------ the phone */
+
+  /*
+   * The landing page on a phone. Swiping does not scroll here, so a swipe up
+   * — the gesture everyone tries first — goes in, and so does a tap anywhere
+   * on the photograph.
+   */
+  useEffect(() => {
+    if (!TOUCH) return;
+    let x0 = 0;
+    let y0 = 0;
+    let t0 = 0;
+    const start = (e: TouchEvent) => {
+      const t = e.touches[0];
+      x0 = t.clientX;
+      y0 = t.clientY;
+      t0 = performance.now();
+    };
+    const end = (e: TouchEvent) => {
+      if (intro.current > 0.4 || !readyRef.current) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - x0;
+      const dy = t.clientY - y0;
+      const swipeUp = -dy > 45 && Math.abs(dy) > Math.abs(dx) * 1.2;
+      const tap = Math.hypot(dx, dy) < 12 && performance.now() - t0 < 350;
+      if (swipeUp || tap) enter();
+    };
+    document.addEventListener('touchstart', start, { passive: true });
+    document.addEventListener('touchend', end, { passive: true });
+    return () => {
+      document.removeEventListener('touchstart', start);
+      document.removeEventListener('touchend', end);
+    };
+  }, [enter]);
+
+  /*
+   * Last resort for the loading screen: if the warm-up has not finished after
+   * 25 seconds on screen (a GPU that stalls, a frame loop that died), let the
+   * visitor in anyway rather than leave them looking at it.
+   */
+  useEffect(() => {
+    let shown = 0;
+    const t = window.setInterval(() => {
+      if (readyRef.current) return window.clearInterval(t);
+      if (document.visibilityState === 'visible') shown++;
+      if (shown >= 25) {
+        window.clearInterval(t);
+        markWarm();
+        onWarm();
+      }
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [onWarm]);
 
   /**
    * A tap on ▲ / ▼: glide to the next (or previous) work, stopping a little
@@ -624,6 +683,7 @@ export function Exhibition() {
       />
 
       {showStats && stats && <div className="stats">{stats}</div>}
+      {debug && <DebugPanel />}
 
       <Intro progressRef={intro} heroSrc={HERO_SRC} onEnter={enter} />
       <Hud

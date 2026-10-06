@@ -950,6 +950,29 @@ button { font: inherit; color: inherit; }
   .picker { width: calc(100vw - 24px); }
 }
 
+/* On a phone the landing's Enter is the obvious way in: a bigger target,
+   and its line breathes. (A swipe up or a tap on the photograph also go in.) */
+@media (hover: none) and (pointer: coarse) {
+  .hero-cta { padding: 14px 14px 14px 0; font-size: 13px; }
+  .hero-cta-line { width: 56px; animation: cta-breathe 1.8s ease-in-out infinite; transform-origin: left; }
+}
+@keyframes cta-breathe { 0%, 100% { transform: scaleX(0.6); opacity: 0.6; } 50% { transform: scaleX(1); opacity: 1; } }
+
+/* ?debug: what the page is doing, for phones with no console. */
+.debug {
+  position: fixed; left: 8px; right: 8px; top: 8px;
+  z-index: 70;
+  margin: 0;
+  padding: 8px 10px;
+  font: 10px/1.45 ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #d8f5c8;
+  background: rgba(0, 0, 0, 0.78);
+  border-radius: 6px;
+  pointer-events: none;
+}
+
 /* ---------------------------------- Phone walk pad
    Right-hand side, a little above the middle: under the thumb, and clear of
    the room picker and end panel, which own the bottom of the screen. */
