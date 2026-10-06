@@ -1,12 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { MeshReflectorMaterial, Text } from '@react-three/drei';
 import { BOUNDS, CEILING, OFF, WING_LAYOUTS, type Segment, type WingLayout } from '@/lib/layout';
 import { MOODS } from '@/lib/moods';
 import { createConcrete } from '@/lib/concrete';
-import { getCameraZ, getInFoyer, subscribeBucket, subscribeRegion } from '@/lib/cameraStore';
+import { getActiveWing, getCameraZ, getInFoyer } from '@/lib/cameraStore';
+import { reachable, registerOccluder } from '@/lib/occluders';
+import { reportStage } from '@/lib/warmup';
 import { WallText } from './WallText';
 import { Foyer, type Maps } from './Foyer';
 import { PulseArrow } from './PulseArrow';
@@ -26,6 +29,11 @@ export { CEILING };
  * room (you can see into them through their doors). Inside a wing: only that
  * wing. Wings fan apart, but a later room of one can pass where another
  * wing's first room stands; such pairs are never drawn together.
+ *
+ * Every room is mounted once, at start-up, and shown or hidden in the frame
+ * loop. Nothing in the building mounts, unmounts or re-renders as you walk or
+ * change room — that churn (new geometry, new materials, shader compiles)
+ * was what made doors and corners stutter.
  */
 
 const REVEAL = '#3a3733';
@@ -54,8 +62,10 @@ function Wall({ maps, args, position, rotation, color, normal }: {
   normal: number;
 }) {
   const ns = useMemo(() => new THREE.Vector2(normal, normal), [normal]);
+  const ref = useRef<THREE.Mesh>(null);
+  useEffect(() => (ref.current ? registerOccluder(ref.current) : undefined), []);
   return (
-    <mesh receiveShadow position={position} rotation={rotation}>
+    <mesh ref={ref} position={position} rotation={rotation}>
       <planeGeometry args={args} />
       <meshStandardMaterial map={maps.map} normalMap={maps.normalMap} roughnessMap={maps.roughnessMap} normalScale={ns} color={color} roughness={0.92} metalness={0} side={THREE.DoubleSide} />
     </mesh>
@@ -80,12 +90,11 @@ function Cove({ length, position, rotation, color, width = 0.07 }: {
 }
 
 /** The end of a wing: a door standing open, light beyond, an arrow leading through. */
-function EndDoor({ z, halfWidth, maps, wl, active, onNext, onFoyer }: {
+function EndDoor({ z, halfWidth, maps, wl, onNext, onFoyer }: {
   z: number;
   halfWidth: number;
   maps: Maps;
   wl: WingLayout;
-  active: boolean;
   onNext: () => void;
   onFoyer: () => void;
 }) {
@@ -96,7 +105,15 @@ function EndDoor({ z, halfWidth, maps, wl, active, onNext, onFoyer }: {
   // The light beyond the door is the colour of the room it leads to.
   const beyond = next ? MOODS[next.mood].portal : ([1.32, 1.26, 1.14] as [number, number, number]);
   const glow = useMemo(() => new THREE.Color(beyond[0] * 0.85, beyond[1] * 0.85, beyond[2] * 0.85), [beyond]);
-  const go = next ? onNext : onFoyer;
+  // Clicks reach invisible things too, so act only for the wing you are in.
+  const go = () => {
+    if (getActiveWing() !== wl.index || getInFoyer()) return;
+    (next ? onNext : onFoyer)();
+  };
+  const arrow = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (arrow.current) arrow.current.visible = getActiveWing() === wl.index && !getInFoyer();
+  });
 
   return (
     <group position={[0, 0, z]}>
@@ -133,32 +150,48 @@ function EndDoor({ z, halfWidth, maps, wl, active, onNext, onFoyer }: {
         {next ? next.wing.title : 'Back to the foyer'}
       </Text>
 
-      {active && (
-        <>
-          <PulseArrow position={[0, 0, 2.6]} onActivate={go} />
-          <mesh
-            position={[0, h / 2, 0.02]}
-            onClick={(e) => { e.stopPropagation(); go(); }}
-            onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
-            onPointerOut={() => { document.body.style.cursor = ''; }}
-          >
-            <planeGeometry args={[w, h]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-          </mesh>
-        </>
-      )}
+      <group ref={arrow} visible={false}>
+        <PulseArrow position={[0, 0, 2.6]} onActivate={go} />
+      </group>
+      {/* Hit area: never drawn, still clickable (raycasts ignore visibility). */}
+      <mesh
+        position={[0, h / 2, 0.02]}
+        visible={false}
+        onClick={(e) => { if (!reachable(e)) return; e.stopPropagation(); go(); }}
+        onPointerOver={(e) => {
+          if (getActiveWing() !== wl.index || !reachable(e)) return;
+          e.stopPropagation();
+          document.body.style.cursor = 'pointer';
+        }}
+        onPointerOut={() => { document.body.style.cursor = ''; }}
+      >
+        <planeGeometry args={[w, h]} />
+        <meshBasicMaterial />
+      </mesh>
     </group>
   );
 }
 
-function RoomGroup({ seg, wl, maps, active, onNext, onFoyer }: {
+function RoomGroup({ seg, wl, maps, onNext, onFoyer }: {
   seg: Segment;
   wl: WingLayout;
   maps: Maps;
-  active: boolean;
   onNext: () => void;
   onFoyer: () => void;
 }) {
+  const group = useRef<THREE.Group>(null);
+  const mid = seg.s0 + seg.length / 2;
+  useFrame(() => {
+    const g = group.current;
+    if (!g) return;
+    const active = getActiveWing();
+    const inFoyer = getInFoyer();
+    const show = wl.index === active
+      ? seg.roomIndex === 0 || !inFoyer || !wl.crosses
+      : seg.roomIndex === 0 && inFoyer;
+    // Distance window along the walk (in the foyer every walk shares the spine).
+    g.visible = show && Math.abs(getCameraZ() - mid) <= seg.length / 2 + 26;
+  });
   const { halfWidth: hw, length, turnIn, turnOut, prevHalf, nextHalf, roomIndex, textSide } = seg;
   const mood = MOODS[wl.mood];
   const normal = mood.walls === 'boards' ? 0.75 : 0.25;
@@ -189,7 +222,7 @@ function RoomGroup({ seg, wl, maps, active, onNext, onFoyer }: {
   const ceilD = zBack - zFront;
 
   return (
-    <group position={[seg.origin[0], 0, seg.origin[1]]} rotation={[0, seg.heading, 0]}>
+    <group ref={group} visible={false} position={[seg.origin[0], 0, seg.origin[1]]} rotation={[0, seg.heading, 0]}>
       {walls.map(({ side, zStart, zEnd }) => {
         const len = zStart - zEnd;
         const zc = (zStart + zEnd) / 2;
@@ -245,64 +278,56 @@ function RoomGroup({ seg, wl, maps, active, onNext, onFoyer }: {
       )}
 
       {!turnOut && (
-        <EndDoor z={-length} halfWidth={hw} maps={endMaps} wl={wl} active={active} onNext={onNext} onFoyer={onFoyer} />
+        <EndDoor z={-length} halfWidth={hw} maps={endMaps} wl={wl} onNext={onNext} onFoyer={onFoyer} />
       )}
     </group>
   );
 }
 
-export function Architecture({ active, onEnter, onNext, onFoyer }: {
-  /** The chosen wing, or null while still choosing in the foyer. */
-  active: number | null;
+/**
+ * The floor reflection's blur. It must be one stable array: drei's reflector
+ * lists `blur` among its memo dependencies, so an inline `[300, 90]` — a new
+ * array on every render — made it build fresh render targets and a new blur
+ * pass on each re-render, without freeing the old ones. That was a GPU
+ * allocation every time the page re-rendered as you walked, and a leak.
+ */
+const FLOOR_BLUR: [number, number] = [300, 90];
+
+/** Memoised: its props are stable, and nothing here needs the parent's renders. */
+export const Architecture = memo(function Architecture({ onEnter, onNext, onFoyer, onBuilt }: {
   onEnter: (wing: number) => void;
   onNext: () => void;
   onFoyer: () => void;
+  /** Called once every room is mounted, for the warm-up to compile them. */
+  onBuilt?: () => void;
 }) {
-  const [cameraS, setCameraS] = useState(() => getCameraZ());
-  useEffect(() => subscribeBucket(setCameraS), []);
-  const [inFoyer, setInFoyer] = useState(() => getInFoyer());
-  useEffect(() => subscribeRegion(setInFoyer), []);
-
   /*
-   * The reflective floor renders the whole scene a second time, every frame.
-   * During warm-up that doubles the GPU cost of something nobody can see yet,
-   * so it begins at a quarter resolution and steps up once the first frames
-   * are behind us.
+   * Wall surfaces, generated straight away: the loading screen covers this,
+   * so there is no reason to wait for idle time and every reason to have the
+   * building complete before the shaders are compiled. Board-marked concrete
+   * for the foyer and concrete rooms; smooth plaster (tinted dark or pale)
+   * for noir and gallery rooms, only if any wing uses one.
    */
-  const [reflectRes, setReflectRes] = useState(128);
-  useEffect(() => {
-    const t = window.setTimeout(() => setReflectRes(512), 1200);
-    return () => clearTimeout(t);
-  }, []);
-
-  /*
-   * Wall surfaces, generated at idle behind the hero: board-marked concrete
-   * for the foyer and concrete rooms, smooth plaster (tinted dark or pale)
-   * for noir and gallery rooms — only if any wing uses one.
-   */
+  const needSmooth = useMemo(() => WING_LAYOUTS.some((wl) => MOODS[wl.mood].walls === 'smooth'), []);
   const [boards, setBoards] = useState<Maps | null>(null);
   const [smooth, setSmooth] = useState<Maps | null>(null);
   useEffect(() => {
     let cancelled = false;
-    const w = window as typeof window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void };
-    const later = (fn: () => void, timeout: number) =>
-      w.requestIdleCallback ? w.requestIdleCallback(fn, { timeout }) : window.setTimeout(fn, 120);
-    const needSmooth = WING_LAYOUTS.some((wl) => MOODS[wl.mood].walls === 'smooth');
-
-    const h1 = later(() => {
+    // One per task, so the loading screen's progress can move in between.
+    const t1 = window.setTimeout(() => {
       if (cancelled) return;
       setBoards(createConcrete({ seed: 3, base: '#5a564f', boards: 6, tieCols: 3, tieRows: 4, streak: 0.45, amplitude: 0.75, size: 512 }));
-      if (!needSmooth) return;
-      later(() => {
-        if (cancelled) return;
-        setSmooth(createConcrete({ seed: 5, base: '#d6d1c6', boards: 0, tieCols: 0, tieRows: 0, streak: 0.06, amplitude: 0.22, size: 512 }));
-      }, 400);
-    }, 400);
-    return () => {
-      cancelled = true;
-      if (w.cancelIdleCallback) w.cancelIdleCallback(h1); else clearTimeout(h1);
-    };
-  }, []);
+      reportStage('walls', needSmooth ? 0.5 : 1);
+    }, 0);
+    const t2 = needSmooth
+      ? window.setTimeout(() => {
+          if (cancelled) return;
+          setSmooth(createConcrete({ seed: 5, base: '#d6d1c6', boards: 0, tieCols: 0, tieRows: 0, streak: 0.06, amplitude: 0.22, size: 512 }));
+          reportStage('walls', 1);
+        }, 30)
+      : 0;
+    return () => { cancelled = true; clearTimeout(t1); clearTimeout(t2); };
+  }, [needSmooth]);
 
   const floor = useMemo(() => {
     const m = 4;
@@ -314,16 +339,27 @@ export function Architecture({ active, onEnter, onNext, onFoyer }: {
     };
   }, []);
 
-  if (!boards) return null;
+  const built = !!boards && (!needSmooth || !!smooth);
+  const announced = useRef(false);
+  useEffect(() => {
+    if (!built || announced.current) return;
+    announced.current = true;
+    // Next frame: the whole tree is committed by then.
+    const raf = requestAnimationFrame(() => onBuilt?.());
+    return () => cancelAnimationFrame(raf);
+  }, [built, onBuilt]);
+
+  if (!built) return null;
 
   return (
     <group>
-      {/* Floor: polished, dark enough to hold a reflection of the prints. */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[floor.x, 0, floor.z]} receiveShadow>
+      {/* Floor: polished, dark enough to hold a reflection of the prints. A
+          fixed resolution: changing it rebuilds the material mid-walk. */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[floor.x, 0, floor.z]}>
         <planeGeometry args={[floor.w, floor.d]} />
         <MeshReflectorMaterial
-          resolution={reflectRes}
-          blur={[400, 120]}
+          resolution={384}
+          blur={FLOOR_BLUR}
           mixBlur={1}
           mixStrength={0.9}
           mixContrast={1}
@@ -337,33 +373,20 @@ export function Architecture({ active, onEnter, onNext, onFoyer }: {
         />
       </mesh>
 
-      <Foyer maps={boards} onEnter={onEnter} showArrows={inFoyer} />
+      <Foyer maps={boards!} onEnter={onEnter} />
 
       {WING_LAYOUTS.map((wl) =>
-        wl.rooms.map((seg) => {
-          const isActive = wl.index === active;
-          const show = isActive
-            ? seg.roomIndex === 0 || !inFoyer || !wl.crosses
-            : seg.roomIndex === 0 && inFoyer;
-          if (!show) return null;
-          // Distance window along the walk (in the foyer every walk shares the spine).
-          const mid = seg.s0 + seg.length / 2;
-          if (Math.abs(cameraS - mid) > seg.length / 2 + 26) return null;
-          const maps = MOODS[wl.mood].walls === 'boards' ? boards : smooth;
-          if (!maps) return null;
-          return (
-            <RoomGroup
-              key={`${wl.index}-${seg.roomIndex}`}
-              seg={seg}
-              wl={wl}
-              maps={maps}
-              active={isActive}
-              onNext={onNext}
-              onFoyer={onFoyer}
-            />
-          );
-        }),
+        wl.rooms.map((seg) => (
+          <RoomGroup
+            key={`${wl.index}-${seg.roomIndex}`}
+            seg={seg}
+            wl={wl}
+            maps={MOODS[wl.mood].walls === 'boards' ? boards! : smooth!}
+            onNext={onNext}
+            onFoyer={onFoyer}
+          />
+        )),
       )}
     </group>
   );
-}
+});

@@ -77,3 +77,20 @@ export function subscribeRegion(fn: RegionListener) {
     regionListeners.delete(fn);
   };
 }
+
+/* ------------------------------------------------------------------ active */
+
+/**
+ * The chosen wing, as a plain value. Frames and rooms read it inside their
+ * own frame loops to decide whether to draw, so changing wing never has to
+ * re-render (or re-mount) anything in the scene.
+ */
+let activeWing: number | null = null;
+
+export function getActiveWing() {
+  return activeWing;
+}
+
+export function setActiveWing(v: number | null) {
+  activeWing = v;
+}

@@ -12,7 +12,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 await page.goto(base, { waitUntil: 'networkidle0', timeout: 180000 });
 await page.waitForSelector('.intro');
 await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
-await page.waitForFunction(() => !document.querySelector('.boot-quiet'), { timeout: 120000 }).catch(() => {});
+// The loading screen lifts once the gallery is warm (dev builds flag it).
+await page.waitForFunction(() => !!window.__nyronReady && !document.querySelector('.loader'), { timeout: 180000, polling: 500 });
 // Works only hang in a chosen room now: walk into the first one.
 await page.evaluate(() => window.__nyronScroll(1));
 await sleep(3000);
@@ -58,7 +59,9 @@ console.log(dz < 0.05 && dp < 0.02 && after.scroll === before.scroll && after.se
 // and it must release cleanly
 await page.keyboard.press('Escape');
 await sleep(2000);
-for (let i = 0; i < 6; i++) { await page.mouse.wheel({ deltaY: 400 }); await sleep(60); }
+// Less than the rest of the room: scrolling on past its end would carry
+// the walk into the next room ("keep scrolling") and muddy the reading.
+for (let i = 0; i < 3; i++) { await page.mouse.wheel({ deltaY: 200 }); await sleep(60); }
 await sleep(7000);
 const freed = await page.evaluate(() => window.__nyron.camera());
 console.log('after Esc, walk s:', freed.z.toFixed(3), Math.abs(freed.z - after.z) > 0.5 ? 'PASS: scroll released' : 'FAIL: still locked');

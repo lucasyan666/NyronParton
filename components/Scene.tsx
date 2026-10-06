@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { AdaptiveEvents } from '@react-three/drei';
 import * as THREE from 'three';
 import {
   ALL_PLACEMENTS,
@@ -15,9 +14,17 @@ import {
   type Placement,
 } from '@/lib/layout';
 import { FOYER_MOOD, MOODS, type MoodSpec } from '@/lib/moods';
-import { getCameraZ, getInFoyer, publishCameraZ, publishRegion, subscribeRegion } from '@/lib/cameraStore';
-import { preloadFirst, setMaxAnisotropy } from '@/lib/useProximityTexture';
-import { Frame, type FrameGate } from './Frame';
+import {
+  getCameraZ,
+  getInFoyer,
+  publishCameraZ,
+  publishRegion,
+  setActiveWing,
+  subscribeRegion,
+} from '@/lib/cameraStore';
+import { pumpUploads, setMaxAnisotropy, warmSet } from '@/lib/useProximityTexture';
+import { isWarm, markWarm, reportStage, setPredrawing } from '@/lib/warmup';
+import { Frame } from './Frame';
 import { Architecture } from './Architecture';
 import { Lighting } from './Lighting';
 import { FocusEffects } from './FocusEffects';
@@ -37,14 +44,25 @@ type Props = {
   onEnterWing: (wing: number) => void;
   onNextWing: () => void;
   onFoyer: () => void;
-  /** Fired once the first real frame has been drawn. */
-  onReady?: () => void;
+  /** Fired once everything is built, compiled and uploaded. */
+  onWarm?: () => void;
   /** Perf line, twice a second, when ?stats is in the URL. */
   onStats?: (line: string) => void;
 };
 
 /** How far back from a photo the camera settles when focused. */
 const VIEW_DISTANCE = 2.2;
+/** Upload budget per frame: generous behind the loading screen, small after. */
+const UPLOAD_MS_WARMING = 40;
+const UPLOAD_MS_WALKING = 4;
+/**
+ * Limits on the loading screen, in seconds of drawn frames — so a tab opened
+ * in the background, where nothing draws, does not use them up. Past the
+ * first, stop waiting for photographs (the rest stream in); past the second,
+ * lift the screen whatever is still outstanding.
+ */
+const PHOTO_TIMEOUT_S = 7;
+const WARM_CAP_S = 12;
 
 const _eye = new THREE.Vector3();
 const _look = new THREE.Vector3();
@@ -58,39 +76,120 @@ function viewpointFor(p: Placement) {
   const [x, y, z] = p.position;
   const nx = Math.sin(p.rotationY);
   const nz = Math.cos(p.rotationY);
-  // Frames are large; back off proportionally so the whole print fits.
   const dist = VIEW_DISTANCE + p.height * 0.6;
   _eye.set(x + nx * dist, y, z + nz * dist);
   _look.set(x, y, z);
   return { eye: _eye, look: _look };
 }
 
-function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnterWing, onNextWing, onFoyer, onReady, onStats }: Props) {
+/**
+ * Compile every shader the building will ever need, without blocking.
+ *
+ * three.js compiles only what is visible, and most of the building is hidden
+ * at any moment (other wings, later rooms, the lamps' beams). So for the
+ * length of one synchronous call everything is made visible, the compile is
+ * started — with KHR_parallel_shader_compile the driver then works in the
+ * background — and visibility is put back exactly as it was before anything
+ * is drawn.
+ */
+function compileEverything(gl: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
+  const hidden: THREE.Object3D[] = [];
+  scene.traverse((o) => {
+    if (!o.visible) {
+      hidden.push(o);
+      o.visible = true;
+    }
+  });
+  let done: Promise<unknown>;
+  try {
+    done = gl.compileAsync(scene, camera);
+  } finally {
+    hidden.forEach((o) => { o.visible = false; });
+  }
+  return done;
+}
+
+function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnterWing, onNextWing, onFoyer, onWarm, onStats }: Props) {
   const { camera, pointer, gl, scene } = useThree();
   const walk = walkFor(active);
   const wing = active == null ? null : WING_LAYOUTS[active];
+  // Plain value for everything that decides visibility in its own frame loop.
+  setActiveWing(active);
 
-  // Photographs hang on side walls and are viewed at glancing angles — the
-  // exact case anisotropic filtering exists for.
   useEffect(() => {
     setMaxAnisotropy(gl.capabilities.getMaxAnisotropy());
-    // Warm the first works of every wing: they are what the foyer doors show.
-    const firsts = WING_LAYOUTS.flatMap((w) => w.order.slice(0, 2).map((p) => p.photo.src));
-    preloadFirst(firsts, firsts.length, Math.min(4, firsts.length));
+    reportStage('scene', 1);
   }, [gl]);
 
-  /*
-   * Compile shaders as soon as the renderer exists, not on the first frame:
-   * profiling the warm-up showed shader compilation as the single largest
-   * item, and it lands as a hitch if it waits until something is drawn.
-   */
+  /* ------------------------------------------------------------ warm-up */
+
+  const photosDone = useRef<() => number>(() => 0);
+  const shadersDone = useRef(false);
+  /** Pre-draw frames still to go; -1 before it starts, 0 once it is done. */
+  const predraw = useRef(-1);
+  const forced = useRef<{ hidden: Set<THREE.Object3D>; culled: THREE.Object3D[] } | null>(null);
+  const warmFrames = useRef(-1);
+  /** Seconds of frames drawn while warming. */
+  const warmClock = useRef(0);
+
+  // Thumbnails for every work in the show, and the full prints you meet
+  // first in each room, all on the GPU before the loading screen lifts.
   useEffect(() => {
-    let cancelled = false;
-    const raf = requestAnimationFrame(() => {
-      if (!cancelled) gl.compile(scene, camera);
-    });
-    return () => { cancelled = true; cancelAnimationFrame(raf); };
+    const firsts = new Set(WING_LAYOUTS.flatMap((w) => w.order.slice(0, 2).map((p) => p.photo.src)));
+    const all = [...firsts, ...ALL_PLACEMENTS.map((p) => p.photo.src).filter((s) => !firsts.has(s))];
+    photosDone.current = warmSet(all, firsts.size);
+  }, []);
+
+  const onBuilt = useCallback(() => {
+    const done = () => {
+      shadersDone.current = true;
+      reportStage('shaders', 0.85);
+    };
+    void compileEverything(gl, scene, camera).then(done, done);
+    reportStage('shaders', 0.5);
   }, [gl, scene, camera]);
+
+  /*
+   * The pre-draw: the last step behind the loading screen.
+   *
+   * A compiled shader is not the whole first-use cost. The GPU driver builds
+   * a pipeline the first time each shader is drawn with a given blending and
+   * render target, and geometry goes up on its first draw. Left alone, that
+   * lands the first time you meet each thing — a lamp's beam, a hover glow,
+   * a room around a corner — as a stall. So for two frames, every object in
+   * the building is shown with culling off and drawn through the real
+   * pipeline (floor reflection, scene, post), then put back as it was.
+   *
+   * Three hooks around the render: before every frame loop (show all), just
+   * before post renders (show again whatever a loop hid since), and after
+   * (restore).
+   */
+  useFrame(() => {
+    if (predraw.current <= 0) return;
+    const f = { hidden: new Set<THREE.Object3D>(), culled: [] as THREE.Object3D[] };
+    scene.traverse((o) => {
+      if (!o.visible) { f.hidden.add(o); o.visible = true; }
+      if (o.frustumCulled) { f.culled.push(o); o.frustumCulled = false; }
+    });
+    forced.current = f;
+    setPredrawing(true);
+  }, -100);
+  useFrame(() => {
+    const f = forced.current;
+    if (!f) return;
+    scene.traverse((o) => { if (!o.visible) { f.hidden.add(o); o.visible = true; } });
+  }, 0.5);
+  useFrame(() => {
+    const f = forced.current;
+    if (!f) return;
+    f.hidden.forEach((o) => { o.visible = false; });
+    f.culled.forEach((o) => { o.frustumCulled = true; });
+    forced.current = null;
+    setPredrawing(false);
+    if (--predraw.current === 0) reportStage('shaders', 1);
+  }, 1.5);
+
+  /* ------------------------------------------------------------- camera */
 
   // Live look-at target, damped alongside position so turns feel like a head
   // turning rather than a cut.
@@ -113,7 +212,6 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
   const [inFoyer, setInFoyer] = useState(() => getInFoyer());
   useEffect(() => subscribeRegion(setInFoyer), []);
   const roomMood: MoodSpec = inFoyer || !wing ? MOODS[FOYER_MOOD] : MOODS[wing.mood];
-  const lampMood: MoodSpec = wing ? MOODS[wing.mood] : MOODS[FOYER_MOOD];
   const moodRef = useRef(roomMood);
   moodRef.current = roomMood;
   const fogTarget = useMemo(() => new THREE.Color(), []);
@@ -142,23 +240,16 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
     [onSelect, onEnterWing],
   );
 
-  // What to draw: the chosen wing's works, plus — from the foyer — the first
-  // room of every other wing, seen through its door.
-  const frames = useMemo(() => {
-    const list: { p: Placement; gate: FrameGate; ink: string; inkDim: string }[] = [];
-    WING_LAYOUTS.forEach((wl) => {
-      const m = MOODS[wl.mood];
-      wl.placements.forEach((p) => {
-        if (wl.index === active) {
-          const gate: FrameGate = p.roomIndex > 0 && wl.crosses ? 'wing' : 'always';
-          list.push({ p, gate, ink: m.ink, inkDim: m.inkDim });
-        } else if (p.roomIndex === 0) {
-          list.push({ p, gate: 'foyer', ink: m.ink, inkDim: m.inkDim });
-        }
-      });
-    });
-    return list;
-  }, [active]);
+  // Every work in the building, mounted once. Each decides in its own frame
+  // loop whether to draw; nothing is added or removed as you walk.
+  const frames = useMemo(
+    () =>
+      WING_LAYOUTS.flatMap((wl) => {
+        const m = MOODS[wl.mood];
+        return wl.placements.map((p) => ({ p, crosses: wl.crosses, ink: m.ink, inkDim: m.inkDim }));
+      }),
+    [],
+  );
 
   // Dev hook for the screenshot harness. Tree-shaken out of production builds.
   useEffect(() => {
@@ -187,16 +278,33 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
 
   const tmpEye = useRef(new THREE.Vector3());
   const tmpLook = useRef(new THREE.Vector3());
-  const announced = useRef(false);
 
   useFrame((_, rawDelta) => {
     // Clamp the timestep: a tab switch or GC pause would otherwise turn into
     // a visible jump through exponential damping.
     const delta = Math.min(rawDelta, 0.05);
 
-    if (!announced.current) {
-      announced.current = true;
-      onReady?.();
+    // Photographs onto the GPU, a few milliseconds' worth per frame.
+    const warming = !isWarm();
+    pumpUploads(gl, warming ? UPLOAD_MS_WARMING : UPLOAD_MS_WALKING);
+
+    if (warming) {
+      warmClock.current += Math.min(rawDelta, 0.1);
+      const photos = photosDone.current();
+      reportStage('photos', photos);
+      const photosReady = photos >= 1 || warmClock.current > PHOTO_TIMEOUT_S;
+      const capped = warmClock.current > WARM_CAP_S;
+      // Everything compiled and on the GPU: pre-draw it all once (above)...
+      if (shadersDone.current && photosReady && predraw.current < 0 && !capped) predraw.current = 2;
+      // ...then two ordinary frames, so the first frame the visitor sees is
+      // not the first frame the GPU has drawn.
+      if (predraw.current === 0 || capped) {
+        if (warmFrames.current < 0) warmFrames.current = 0;
+        else if (++warmFrames.current >= 2) {
+          markWarm();
+          onWarm?.();
+        }
+      }
     }
 
     // A teleport (changing wing through a door, or back to the foyer) jumps
@@ -298,21 +406,14 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
 
   return (
     <>
-      <Lighting
-        focusAmount={focusAmount}
-        selectedId={selectedId}
-        walk={walk}
-        placements={wing?.placements ?? []}
-        mood={roomMood}
-        lampMood={lampMood}
-      />
-      <Architecture active={active} onEnter={onEnterWing} onNext={onNextWing} onFoyer={onFoyer} />
+      <Lighting focusAmount={focusAmount} selectedId={selectedId} walk={walk} mood={roomMood} />
+      <Architecture onEnter={onEnterWing} onNext={onNextWing} onFoyer={onFoyer} onBuilt={onBuilt} />
 
-      {frames.map(({ p, gate, ink, inkDim }) => (
+      {frames.map(({ p, crosses, ink, inkDim }) => (
         <Frame
           key={p.photo.id}
           placement={p}
-          gate={gate}
+          crosses={crosses}
           ink={ink}
           inkDim={inkDim}
           revealed={selectedId === p.photo.id}
@@ -323,26 +424,28 @@ function Rig({ targetS, teleport, active, selectedId, onSelect, onCameraZ, onEnt
 
       {selected && <Caption placement={selected} amountRef={focus} />}
 
-      {/* Skips raycasting during motion — pointer events are not needed mid-scroll. */}
-      <AdaptiveEvents />
-
       {onStats && <Stats onSample={onStats} />}
 
-      <FocusEffects amountRef={focus} quantised={focusAmount} targetRef={focusTarget} extentRef={focusExtent} />
+      <FocusEffects amountRef={focus} targetRef={focusTarget} extentRef={focusExtent} />
       <fog attach="fog" args={[foyerMood.fog, foyerMood.fogNear, foyerMood.fogFar]} />
     </>
   );
 }
 
+/*
+ * Fixed pixel ratio, deliberately not adaptive: dropping resolution when the
+ * frame rate dips softens the prints, which on a photography site is worse
+ * than a lower frame rate. It would also misfire whenever the browser itself
+ * caps the frame rate (battery saver holds every page to 30 fps), blurring
+ * the photographs for no gain at all.
+ */
 export function Scene(props: Props) {
   return (
     <Canvas
       // MSAA is wasted here: EffectComposer renders into its own buffer.
       gl={{ antialias: false, powerPreference: 'high-performance', stencil: false, depth: true }}
       dpr={[1, 1.5]}
-      performance={{ min: 0.9, max: 1, debounce: 200 }}
       camera={{ fov: 64, near: 0.08, far: 160, position: [0, EYE_HEIGHT, 6] }}
-      shadows
       style={{ position: 'fixed', inset: 0 }}
       onPointerMissed={() => props.onSelect(null)}
     >

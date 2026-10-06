@@ -1,8 +1,11 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
+import { useFrame } from '@react-three/fiber';
 import { Text } from '@react-three/drei';
+import { getInFoyer } from '@/lib/cameraStore';
+import { reachable, registerOccluder } from '@/lib/occluders';
 import { DOOR_H, DOOR_W, FOYER, WING_LAYOUTS, type WingLayout } from '@/lib/layout';
 import { FOYER_MOOD, MOODS } from '@/lib/moods';
 import { createGlowMaterial } from '@/lib/glowMaterial';
@@ -57,9 +60,11 @@ function Panel({ maps, w, h, position, rotationY = 0, tint, u0 = 0, v0 = 0 }: {
     return out;
   }, [maps, w, h, u0, v0]);
   const ns = useMemo(() => new THREE.Vector2(0.75, 0.75), []);
+  const ref = useRef<THREE.Mesh>(null);
+  useEffect(() => (ref.current ? registerOccluder(ref.current) : undefined), []);
   if (w <= 0.01 || h <= 0.01) return null;
   return (
-    <mesh position={position} rotation={[0, rotationY, 0]} receiveShadow>
+    <mesh ref={ref} position={position} rotation={[0, rotationY, 0]}>
       <planeGeometry args={[w, h]} />
       <meshStandardMaterial
         map={local.map}
@@ -111,12 +116,17 @@ function Spill({ x, z, color }: { x: number; z: number; color: [number, number, 
   );
 }
 
-function Door({ wl, maps, onEnter, showArrow }: {
+function Door({ wl, onEnter }: {
   wl: WingLayout;
-  maps: Maps;
   onEnter: (wing: number) => void;
-  showArrow: boolean;
 }) {
+  // The doors are the foyer's choice: they act, and their arrows show, only
+  // while you are in the foyer. Toggled in the frame loop, not by re-render.
+  const enter = () => { if (getInFoyer()) onEnter(wl.index); };
+  const arrow = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (arrow.current) arrow.current.visible = getInFoyer();
+  });
   const x = wl.doorX;
   const z = -FOYER.depth;
   const mood = MOODS[wl.mood];
@@ -148,15 +158,21 @@ function Door({ wl, maps, onEnter, showArrow }: {
 
       <Spill x={x} z={z + 1.7} color={portal} />
 
-      {/* Click anywhere in the opening, too: the arrow is not the only way in. */}
+      {/* Click anywhere in the opening, too: the arrow is not the only way in.
+          Never drawn; raycasts ignore visibility, so it still takes clicks. */}
       <mesh
         position={[x, DOOR_H / 2, z + 0.02]}
-        onClick={(e) => { e.stopPropagation(); onEnter(wl.index); }}
-        onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
+        visible={false}
+        onClick={(e) => { if (!reachable(e)) return; e.stopPropagation(); enter(); }}
+        onPointerOver={(e) => {
+          if (!getInFoyer() || !reachable(e)) return;
+          e.stopPropagation();
+          document.body.style.cursor = 'pointer';
+        }}
         onPointerOut={() => { document.body.style.cursor = ''; }}
       >
         <planeGeometry args={[DOOR_W, DOOR_H]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <meshBasicMaterial />
       </mesh>
 
       <Text font={ITALIC} fontSize={0.11} letterSpacing={0.2} color="#e0663d" anchorX="center" anchorY="bottom" position={[x, DOOR_H + 1.16, z + 0.02]}>
@@ -169,21 +185,16 @@ function Door({ wl, maps, onEnter, showArrow }: {
         {subtitle}
       </Text>
 
-      <PulseArrow
-        position={[x, 0, z + 1.75]}
-        rotationY={0}
-        visible={showArrow}
-        onActivate={showArrow ? () => onEnter(wl.index) : undefined}
-      />
+      <group ref={arrow}>
+        <PulseArrow position={[x, 0, z + 1.75]} rotationY={0} onActivate={enter} />
+      </group>
     </group>
   );
 }
 
-export function Foyer({ maps, onEnter, showArrows }: {
+export function Foyer({ maps, onEnter }: {
   maps: Maps;
   onEnter: (wing: number) => void;
-  /** Arrows hide once you are inside a wing; they are behind you then. */
-  showArrows: boolean;
 }) {
   const { depth: D, halfWidth: HW, back: B, height: H } = FOYER;
   const tint = MOODS[FOYER_MOOD].wallTint;
@@ -253,7 +264,7 @@ export function Foyer({ maps, onEnter, showArrows }: {
       <pointLight position={[0, H - 0.5, -D + 4]} intensity={16} distance={26} decay={1.35} color="#ffe6cc" />
 
       {WING_LAYOUTS.map((wl) => (
-        <Door key={wl.index} wl={wl} maps={maps} onEnter={onEnter} showArrow={showArrows} />
+        <Door key={wl.index} wl={wl} onEnter={onEnter} />
       ))}
     </group>
   );

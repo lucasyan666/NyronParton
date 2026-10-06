@@ -20,12 +20,15 @@ export function PulseChevrons() {
  * same choice is on the floor in front of every door; this is the version a
  * keyboard, a screen reader, or someone who has not spotted the arrows can use.
  */
-export function RoomPicker({ visible, active, onEnter }: {
+export function RoomPicker({ visible, active, next, onEnter }: {
   visible: boolean;
   active: number | null;
+  /** The room that scrolling on leads into; its button fills as you push. */
+  next: number | null;
   onEnter: (wing: number) => void;
 }) {
   const n = WING_LAYOUTS.length;
+  const nextTitle = next == null ? null : WING_LAYOUTS[next]?.wing.title;
   return (
     <nav className={`picker ${visible ? 'is-on' : ''}`} aria-label="Choose a room" aria-hidden={!visible}>
       <span className="picker-label">Choose a room</span>
@@ -34,7 +37,7 @@ export function RoomPicker({ visible, active, onEnter }: {
           <button
             key={wl.index}
             type="button"
-            className={`picker-room ${wl.index === active ? 'is-current' : ''}`}
+            className={`picker-room ${wl.index === active ? 'is-current' : ''} ${wl.index === next ? 'is-next' : ''}`}
             onClick={() => onEnter(wl.index)}
             tabIndex={visible ? 0 : -1}
           >
@@ -45,7 +48,15 @@ export function RoomPicker({ visible, active, onEnter }: {
           </button>
         ))}
       </div>
-      <span className="picker-hint">or press 1–{n}</span>
+      <span className="picker-hint">
+        {nextTitle ? (
+          <>
+            Keep scrolling for <em>{nextTitle}</em>, or press 1–{n}
+          </>
+        ) : (
+          <>or press 1–{n}</>
+        )}
+      </span>
     </nav>
   );
 }

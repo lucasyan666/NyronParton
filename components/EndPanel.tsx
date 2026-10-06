@@ -68,6 +68,7 @@ export function EndPanel({ progressRef, wing, next, onNext, onFoyer, light }: {
           Back to the foyer
         </button>
       </div>
+      {next && <p className="end-hint">or keep scrolling</p>}
 
       <nav className="footer-links" aria-label="Contact and elsewhere">
         <a href="https://www.instagram.com/nyronparton" target="_blank" rel="noopener noreferrer">

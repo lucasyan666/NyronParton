@@ -4,19 +4,26 @@ import * as THREE from 'three';
 import { thumbOf } from '@/data/exhibition';
 
 /**
- * Two-tier texture residency, driven imperatively from each Frame's render
- * loop rather than through React state.
+ * Photograph residency, in three steps, driven imperatively from each Frame's
+ * render loop rather than through React state:
+ *
+ *   requested → decoded (the browser has the image) → uploaded (on the GPU)
+ *
+ * The last step is the one that stalls. Uploading a 2048px print and building
+ * its mipmaps is a synchronous GPU call of several milliseconds, and before
+ * this queue existed a dozen of them could land in the same frame — measured
+ * as a 200 ms+ freeze. Now decoded images wait in a queue, and `pumpUploads`
+ * moves them to the GPU a few milliseconds' worth per frame, thumbnails
+ * first. A frame only switches to a texture once it has actually been
+ * uploaded, so nothing is ever uploaded mid-draw.
  *
  * Every photograph has a small companion (`<name>.thumb.webp`, ~400px) that is
- * cheap enough to fetch for anything vaguely ahead of the camera. The full
- * print is requested only for frames that are genuinely near. `peek()` always
- * hands back the best thing currently decoded, so a frame swaps thumb → full
- * the moment the full arrives and is never blank in between.
- *
- * All of this is plain Maps and refcounts. No React, no re-renders.
+ * cheap enough to keep for every work in the show. Full prints are held only
+ * near the camera.
  */
 
-const cache = new Map<string, THREE.Texture>();
+const resident = new Map<string, THREE.Texture>();
+const queued = new Map<string, THREE.Texture>();
 const inflight = new Set<string>();
 const failed = new Set<string>();
 const refs = new Map<string, number>();
@@ -24,15 +31,17 @@ const loader = new THREE.TextureLoader();
 
 let maxAnisotropy = 8;
 
-/** Set once the renderer exists; already-decoded textures are upgraded too. */
+/** Set once the renderer exists; already-loaded textures are upgraded too. */
 export function setMaxAnisotropy(n: number) {
   maxAnisotropy = Math.max(1, Math.min(16, n));
-  cache.forEach((tex) => {
+  const up = (tex: THREE.Texture) => {
     if (tex.anisotropy !== maxAnisotropy) {
       tex.anisotropy = maxAnisotropy;
       tex.needsUpdate = true;
     }
-  });
+  };
+  resident.forEach(up);
+  queued.forEach(up);
 }
 
 function configure(tex: THREE.Texture) {
@@ -50,13 +59,13 @@ function configure(tex: THREE.Texture) {
 }
 
 function load(url: string) {
-  if (cache.has(url) || inflight.has(url) || failed.has(url)) return;
+  if (resident.has(url) || queued.has(url) || inflight.has(url) || failed.has(url)) return;
   inflight.add(url);
   loader.load(
     url,
     (tex) => {
-      cache.set(url, configure(tex));
       inflight.delete(url);
+      queued.set(url, configure(tex));
     },
     undefined,
     () => {
@@ -68,12 +77,35 @@ function load(url: string) {
   );
 }
 
-/** Warm the thumbnail only. Cheap; call for anything ahead of the camera. */
+const isThumb = (url: string) => url.endsWith('.thumb.webp');
+
+/**
+ * Move decoded textures to the GPU within a time budget. Thumbnails go first
+ * (they are what keeps a frame from being blank), then full prints. At least
+ * one texture moves per call, so the queue always drains.
+ */
+export function pumpUploads(gl: THREE.WebGLRenderer, budgetMs: number) {
+  if (queued.size === 0) return 0;
+  const order = [...queued.keys()].sort((a, b) => Number(isThumb(b)) - Number(isThumb(a)));
+  const t0 = performance.now();
+  let n = 0;
+  for (const url of order) {
+    if (n > 0 && performance.now() - t0 > budgetMs) break;
+    const tex = queued.get(url)!;
+    queued.delete(url);
+    gl.initTexture(tex);
+    resident.set(url, tex);
+    n++;
+  }
+  return n;
+}
+
+/** Warm the thumbnail only. Cheap; call for anything vaguely ahead. */
 export function prefetch(src: string) {
   load(thumbOf(src));
 }
 
-/** Hold a reference and make sure both tiers are on their way. */
+/** Hold a reference to the full print and make sure both tiers are on their way. */
 export function request(src: string) {
   refs.set(src, (refs.get(src) ?? 0) + 1);
   load(thumbOf(src));
@@ -86,73 +118,34 @@ export function release(src: string) {
   else refs.set(src, n);
 }
 
-/** Best texture currently decoded for this photo: full, else thumb, else null. */
+/** Best texture already on the GPU for this photo: full, else thumb, else null. */
 export function peek(src: string): THREE.Texture | null {
-  return cache.get(src) ?? cache.get(thumbOf(src)) ?? null;
-}
-
-/** True once the full-resolution print is resident. */
-export function isFull(src: string): boolean {
-  return cache.has(src);
+  return resident.get(src) ?? resident.get(thumbOf(src)) ?? null;
 }
 
 /** Drop full-size textures nothing references. Thumbs are small; keep them. */
 export function evictUnreferenced() {
-  cache.forEach((tex, url) => {
-    if (url.endsWith('.thumb.webp')) return;
+  resident.forEach((tex, url) => {
+    if (isThumb(url)) return;
     if (!refs.has(url)) {
       tex.dispose();
-      cache.delete(url);
+      resident.delete(url);
     }
   });
 }
 
 /**
- * Warm the opening of the show.
- *
- * Thumbnails for the first `n` works, but full prints for only the first
- * `full` of them. A 2048px print is ~16 MB once decoded and uploaded, so
- * warming ten of them meant ~160 MB of texture traffic before the visitor
- * had seen anything — measured as the single largest item in the startup
- * profile. The rest stream in on approach, which is what the proximity
- * loader is for.
+ * Warm a set of photographs: thumbnails for all of them, full prints for the
+ * first `full`. Returns a function reporting 0..1 — the share now on the GPU
+ * (or confirmed missing) — for the loading screen.
  */
-export function preloadFirst(srcs: string[], n = 8, full = 2) {
-  srcs.slice(0, n).forEach((s, i) => {
-    load(thumbOf(s));
-    if (i < full) load(s);
-  });
-}
-
-/**
- * Fetch every thumbnail in the background, a few at a time.
- *
- * Thumbs are ~12 KB each, so the whole show is a few hundred KB — cheaper
- * than one full print. Warming them all during the intro means no frame is
- * ever blank when you walk into a room; the full-resolution print still
- * streams in on approach and replaces the thumb when it lands.
- *
- * Deliberately serialised in small batches so it cannot contend with the
- * full-size prints for the first room, which matter more.
- */
-export async function warmAllThumbs(srcs: string[], batch = 4) {
-  for (let i = 0; i < srcs.length; i += batch) {
-    await Promise.all(
-      srcs.slice(i, i + batch).map(
-        (s) =>
-          new Promise<void>((resolve) => {
-            const url = thumbOf(s);
-            if (cache.has(url) || failed.has(url)) return resolve();
-            const img = new Image();
-            img.onload = img.onerror = () => resolve();
-            img.decoding = 'async';
-            img.src = url;
-          }),
-      ),
-    );
-    // yield to the renderer between batches
-    await new Promise((r) => setTimeout(r, 0));
-  }
-  // now hand them to three, which will hit the browser cache
-  srcs.forEach((s) => load(thumbOf(s)));
+export function warmSet(srcs: string[], full: number): () => number {
+  const urls = [...new Set([...srcs.map(thumbOf), ...srcs.slice(0, full)])];
+  urls.forEach(load);
+  return () => {
+    if (!urls.length) return 1;
+    let done = 0;
+    for (const u of urls) if (resident.has(u) || failed.has(u)) done++;
+    return done / urls.length;
+  };
 }

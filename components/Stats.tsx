@@ -22,11 +22,24 @@ export function Stats({ onSample }: { onSample: (line: string) => void }) {
     return () => { gl.info.autoReset = true; };
   }, [gl]);
 
+  const seen = useRef('');
+
   useFrame(() => {
     // Previous frame's totals, then reset for this one.
     calls.current = gl.info.render.calls;
     tris.current = gl.info.render.triangles;
     gl.info.reset();
+
+    // A timeline of GPU residency for the perf harness: new geometry,
+    // textures or shader programs appearing mid-walk are first-use costs.
+    const { geometries, textures } = gl.info.memory;
+    const programs = gl.info.programs?.length ?? 0;
+    const key = `${geometries}/${textures}/${programs}`;
+    if (key !== seen.current) {
+      seen.current = key;
+      const w = window as unknown as { __glog?: [number, number, number, number][] };
+      (w.__glog ??= []).push([performance.now(), geometries, textures, programs]);
+    }
 
     frames.current++;
     const now = performance.now();

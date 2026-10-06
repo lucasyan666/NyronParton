@@ -5,7 +5,8 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { Placement } from '@/lib/layout';
 import { peek, prefetch, release, request } from '@/lib/useProximityTexture';
-import { getCameraZ, getInFoyer } from '@/lib/cameraStore';
+import { getActiveWing, getCameraZ, getInFoyer } from '@/lib/cameraStore';
+import { isOccluded } from '@/lib/occluders';
 import { FrameLabel } from './FrameLabel';
 import { createGlowMaterial } from '@/lib/glowMaterial';
 
@@ -27,25 +28,36 @@ const GLOW_SPREAD = 3.0;
 const LIFT_HOVER = 0.07;
 const LIFT_HELD = 0.14;
 
-/**
- * When a frame may be drawn:
- *  'always' — the chosen wing's works;
- *  'foyer'  — another wing's first room, seen through its door from the foyer;
- *  'wing'   — a later room that would clash with a foyer glimpse (see layout).
- */
-export type FrameGate = 'always' | 'foyer' | 'wing';
-
 type Props = {
   placement: Placement;
   revealed: boolean;
   dimmed: boolean;
   onSelect: (id: string) => void;
-  gate?: FrameGate;
+  /** This work's wing has a later room that crosses another wing's first. */
+  crosses: boolean;
   ink?: string;
   inkDim?: string;
 };
 
-function FrameImpl({ placement, revealed, dimmed, onSelect, gate = 'always', ink, inkDim }: Props) {
+/**
+ * Every work in the building is mounted once, at start-up, and decides each
+ * frame whether to draw. Mounting works as you enter a room — materials,
+ * labels, textures — was a source of hitches at every door.
+ *
+ *  · The chosen wing's works draw, except a later room that crosses another
+ *    wing's first room, which waits until you are past the foyer.
+ *  · Other wings show only their first room, only from the foyer, through
+ *    their doors — and only at thumbnail resolution, which is all a glimpse
+ *    through a doorway needs.
+ */
+function allowedNow(p: Placement, crosses: boolean) {
+  const active = getActiveWing();
+  const inFoyer = getInFoyer();
+  if (p.wing === active) return p.roomIndex === 0 || !crosses || !inFoyer;
+  return p.roomIndex === 0 && inFoyer;
+}
+
+function FrameImpl({ placement, revealed, dimmed, onSelect, crosses, ink, inkDim }: Props) {
   const { photo, position, rotationY, height } = placement;
   const width = height * photo.aspect;
 
@@ -54,8 +66,6 @@ function FrameImpl({ placement, revealed, dimmed, onSelect, gate = 'always', ink
   const glow = useRef<THREE.Mesh>(null);
   const shadow = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
-  // Labels are two troika Text objects each; mount only once near.
-  const [labelReady, setLabelReady] = useState(false);
 
   /** Unlit and untoned: the print renders exactly as shot. */
   const material = useMemo(
@@ -93,7 +103,7 @@ function FrameImpl({ placement, revealed, dimmed, onSelect, gate = 'always', ink
     return m;
   }, [frameW, frameH]);
 
-  const visible = useRef(true);
+  const visible = useRef(false);
   const holding = useRef(false);
   const warmed = useRef(false);
   const applied = useRef<THREE.Texture | null>(null);
@@ -116,33 +126,34 @@ function FrameImpl({ placement, revealed, dimmed, onSelect, gate = 'always', ink
   useFrame((_, rawDelta) => {
     const delta = Math.min(rawDelta, 0.05);
     const distance = revealed ? 0 : Math.abs(getCameraZ() - placement.focusS);
+    const mine = placement.wing === getActiveWing();
 
     // Residency is decided BEFORE the cull check, so a culled frame is
-    // already holding its texture by the time it comes back into view.
+    // already holding its texture by the time it comes back into view. Only
+    // the chosen wing holds full prints; a doorway glimpse uses the thumb.
     if (!warmed.current && distance < PREFETCH_THUMB) {
       warmed.current = true;
       prefetch(photo.src);
     }
-    if (!holding.current && distance < PREFETCH) {
+    if (!holding.current && mine && distance < PREFETCH) {
       holding.current = true;
       request(photo.src);
-    } else if (holding.current && distance > DROP) {
+    } else if (holding.current && (!mine || distance > DROP)) {
       holding.current = false;
       release(photo.src);
     }
 
-    // Best available: full print, else thumb, else nothing.
+    // Best texture already on the GPU: full print, else thumb, else nothing.
+    // The map define does not change once set, so this never recompiles.
     const tex = holding.current || warmed.current ? peek(photo.src) : null;
     if (tex !== applied.current) {
+      const hadMap = applied.current !== null;
       applied.current = tex;
       material.map = tex;
-      material.needsUpdate = true;
+      if (!hadMap || !tex) material.needsUpdate = true;
     }
 
-    if (!labelReady && distance < CULL) setLabelReady(true);
-
-    const allowed = gate === 'always' || (gate === 'foyer') === getInFoyer();
-    const shouldShow = allowed && distance <= CULL;
+    const shouldShow = allowedNow(placement, crosses) && distance <= CULL;
     if (shouldShow !== visible.current && group.current) {
       visible.current = shouldShow;
       group.current.visible = shouldShow;
@@ -194,7 +205,7 @@ function FrameImpl({ placement, revealed, dimmed, onSelect, gate = 'always', ink
   });
 
   return (
-    <group ref={group} position={position} rotation={[0, rotationY, 0]}>
+    <group ref={group} position={position} rotation={[0, rotationY, 0]} visible={false}>
       {/* Stays on the wall while the plate lifts. The frame's back sits on
           the wall's face, so these lie a hair in front of it. */}
       <mesh ref={shadow} position={[0, -0.03, 0.002]} material={shadowMaterial} renderOrder={1}>
@@ -217,17 +228,26 @@ function FrameImpl({ placement, revealed, dimmed, onSelect, gate = 'always', ink
         </mesh>
         <mesh
           position={[0, 0, FRAME_DEPTH + 0.003]}
-          onClick={(e) => { e.stopPropagation(); onSelect(photo.id); }}
-          onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
+          onClick={(e) => {
+            // Raycasts ignore visibility and pass through walls: only a work
+            // you can actually see may be opened.
+            if (!visible.current || isOccluded(e.ray, e.distance)) return;
+            e.stopPropagation();
+            onSelect(photo.id);
+          }}
+          onPointerOver={(e) => {
+            if (!visible.current || isOccluded(e.ray, e.distance)) return;
+            e.stopPropagation();
+            setHovered(true);
+            document.body.style.cursor = 'pointer';
+          }}
           onPointerOut={() => { setHovered(false); document.body.style.cursor = ''; }}
           material={material}
         >
           <planeGeometry args={[width, height]} />
         </mesh>
 
-        {labelReady && (
-          <FrameLabel photo={photo} width={width} height={mountH} emphasisRef={emphasis} ink={ink} inkDim={inkDim} />
-        )}
+        <FrameLabel photo={photo} width={width} height={mountH} emphasisRef={emphasis} ink={ink} inkDim={inkDim} />
       </group>
     </group>
   );

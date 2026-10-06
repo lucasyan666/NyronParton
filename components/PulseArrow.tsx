@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { createGlowMaterial } from '@/lib/glowMaterial';
+import { reachable } from '@/lib/occluders';
 
 /**
  * A way in: three chevrons on the floor, pointing through a door, with a
@@ -120,17 +121,19 @@ export function PulseArrow({
         </mesh>
       </group>
 
-      {/* Click target: far bigger than the chevrons. */}
+      {/* Click target: far bigger than the chevrons. Never drawn — raycasts
+          ignore visibility, so it costs no draw call and still takes clicks. */}
       {onActivate && (
         <mesh
           rotation={[-Math.PI / 2, 0, 0]}
           position={[0, 0.02, 0]}
-          onClick={(e) => { e.stopPropagation(); onActivate(); }}
-          onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
+          visible={false}
+          onClick={(e) => { if (!reachable(e)) return; e.stopPropagation(); onActivate(); }}
+          onPointerOver={(e) => { if (!reachable(e)) return; e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
           onPointerOut={() => { setHovered(false); document.body.style.cursor = ''; }}
         >
           <planeGeometry args={[1.8, 2.2]} />
-          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          <meshBasicMaterial />
         </mesh>
       )}
     </group>

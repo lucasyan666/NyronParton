@@ -62,7 +62,7 @@ button { font: inherit; color: inherit; }
 
 /* small caps label style, used everywhere something is a label */
 .hud-sub, .hud-room-index, .hud-bottom, .intro-key, .intro-cue, .label-meta,
-.plate-meta, .footer-links, .footer-mark, .flat-foot, .boot em, .stats {
+.plate-meta, .footer-links, .footer-mark, .flat-foot, .loader-line, .stats {
   font-family: var(--sans);
   font-size: 11px;
   letter-spacing: 0.14em;
@@ -70,18 +70,24 @@ button { font: inherit; color: inherit; }
   font-weight: 500;
 }
 
-/* ---------------------------------- Boot
-   Positioned to match the intro name's start state exactly, so the loader
-   becomes the page without the letters moving. */
+/* ---------------------------------- Loading screen
+   Up from the first paint until the gallery is warm. The name sits exactly
+   where the landing page's name starts, so when the screen fades the name
+   stays put and the photograph appears around it. Every animation here is
+   opacity or transform, which the browser runs off the main thread: the
+   pulse keeps breathing while the warm-up works underneath.
+   No entry animation: the server-rendered screen and the live one are
+   swapped in place and must look identical. */
 
-.boot {
+.loader {
   position: fixed; inset: 0;
   z-index: 60;
   background: var(--ground);
-  animation: fade-in 260ms ease both;
+  transition: opacity 760ms var(--ease);
 }
+.loader.is-leaving { opacity: 0; pointer-events: none; }
 
-.boot span {
+.loader-mark {
   position: absolute;
   left: 24px; right: 24px;
   top: 42vh;
@@ -91,24 +97,39 @@ button { font: inherit; color: inherit; }
   font-size: clamp(64px, 12vw, 168px);
   line-height: 0.9;
   letter-spacing: -0.02em;
-  color: var(--ink);
+  color: #fbfaf7;
 }
 
-.boot em {
+.loader-foot {
   position: absolute;
   left: 0; right: 0;
-  bottom: 34px;
-  text-align: center;
-  font-style: normal;
-  color: var(--ink-dim);
-  animation: pulse 1.6s ease-in-out infinite;
+  bottom: 38px;
+  display: grid;
+  justify-items: center;
+  gap: 14px;
 }
-
-.boot-quiet { background: transparent; pointer-events: none; z-index: 45; }
-.boot-quiet em { color: #fbfaf7; text-shadow: 0 1px 12px rgba(0,0,0,0.35); }
+.loader-bar {
+  display: block;
+  width: min(200px, 46vw);
+  height: 1px;
+  overflow: hidden;
+  background: rgba(236, 230, 218, 0.14);
+}
+.loader-bar i {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+  transform-origin: left center;
+  transition: transform 700ms var(--ease);
+}
+.loader-line {
+  color: var(--ink-dim);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+.loader.is-leaving .loader-line { animation: none; opacity: 1; }
 
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+@keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 
 /* ---------------------------------- Intro
    Everything below reads --p (0..1), written per frame by Intro.tsx.
@@ -559,6 +580,28 @@ button { font: inherit; color: inherit; }
 }
 .picker-room .pulse-chevrons { color: var(--accent); }
 .picker-room.is-current { border-color: rgba(224, 102, 61, 0.55); }
+.picker-hint em {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+/* "Keep scrolling": the way on fills as forward scroll builds at a dead end.
+   --push (0..1) is written to the root by the page; no renders involved. */
+.picker-room.is-next, .end-next {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.picker-room.is-next { border-color: rgba(224, 102, 61, 0.45); }
+.picker-room.is-next::before, .end-next::before {
+  content: '';
+  position: absolute; inset: 0;
+  z-index: -1;
+  background: rgba(224, 102, 61, 0.3);
+  transform: scaleX(var(--push, 0));
+  transform-origin: left center;
+}
 .picker-index {
   font-family: var(--sans);
   font-size: 10.5px;
@@ -640,6 +683,14 @@ button { font: inherit; color: inherit; }
   margin-left: 6px;
 }
 .end-next .pulse-chevrons { color: var(--accent); }
+.end-hint {
+  margin: -2px 0 0;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
+  opacity: 0.75;
+}
 .end-foyer {
   border: 1px solid rgba(236, 230, 218, 0.18);
   background: transparent;
@@ -688,7 +739,8 @@ button { font: inherit; color: inherit; }
 }
 .endpanel.is-light .end-line em,
 .endpanel.is-light .footer-mark,
-.endpanel.is-light .end-foyer { color: #5d5850; }
+.endpanel.is-light .end-foyer,
+.endpanel.is-light .end-hint { color: #5d5850; }
 .endpanel.is-light .end-foyer { border-color: rgba(28, 26, 24, 0.22); }
 .endpanel.is-light .end-next { color: #1d1b18; }
 

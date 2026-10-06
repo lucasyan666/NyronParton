@@ -3,9 +3,13 @@
 import { Component, useEffect, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import { FlatGallery } from './FlatGallery';
+import { LoaderView } from './Loader';
 
+// While the gallery's code arrives, the loading screen stays up — the same
+// markup the server rendered, so there is no flash between them.
 const Exhibition = dynamic(() => import('./Exhibition').then((m) => m.Exhibition), {
   ssr: false,
+  loading: () => <LoaderView progress={0.04} />,
 });
 
 type Verdict = 'pending' | '3d' | 'flat';
@@ -48,13 +52,7 @@ export function Gate() {
     setVerdict(!hasApi || reduced || (narrow && coarse) || (coarse && weak) ? 'flat' : '3d');
   }, []);
 
-  if (verdict === 'pending') {
-    return (
-      <div className="boot">
-        <span>Nyron Parton</span>
-      </div>
-    );
-  }
+  if (verdict === 'pending') return <LoaderView progress={0.02} />;
 
   return verdict === '3d' ? (
     <Fallback>

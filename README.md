@@ -11,6 +11,15 @@ and lights each print with its own stage light that strikes on as you
 approach. Long rooms turn corners. At the far end a door stands open onto the
 next room's light: walk through it, or go back to the foyer (H).
 
+There are no dead ends. At the doors in the foyer, or at the end of a room,
+keep scrolling and you are carried on into the next room (the foyer offers
+the next one you have not seen). The button for where you are going fills as
+you scroll; scrolling back cancels it.
+
+The site opens on a loading screen (the name, a pulsing line, a thin progress
+bar) that stays up while the whole gallery is built and warmed, then lifts
+onto the landing page. See Performance.
+
 ## Run it
 
 ```bash
@@ -57,23 +66,26 @@ app/page.tsx              Gate → Exhibition (3D) | FlatGallery (touch, reduced
                           SemanticIndex (always: crawlers, screen readers)
 
 components/Intro.tsx      full-bleed hero → profile, scroll-linked via --p
-components/Scene.tsx      camera rig, focus glide, adaptive resolution
+components/Loader.tsx     the loading screen, server-rendered so it is the first paint
+components/Scene.tsx      camera rig, focus glide, the warm-up
 components/Frame.tsx      one print: mount, moulding, shadow, hover lift, thumb→full
 components/FrameLabel.tsx 3D hover title (troika, bundled Instrument Serif)
 components/Caption.tsx    click caption, DOM in 3D via <Html transform>
 components/Foyer.tsx      the hall: doors, titles, light frames, floor spill, arrows
 components/PulseArrow     floor chevrons with a travelling pulse (bloom does the glow)
 components/Architecture   every room in its own frame; corner walls, end doors
+components/LampPool       five stage lights that move to the nearest works
 components/RoomPicker     the foyer's choice in the DOM: keyboard, screen readers
 components/EndPanel       end of a room: next room, back to the foyer, contact
 components/WallText.tsx   room title + statement on the wall at each entrance
-components/Footer.tsx     rises over the final room
 
 lib/layout.ts             foyer + one walk per wing; rooms as path segments with turns;
                           print placement checked against real wall extents
 lib/moods.ts              the three room looks: walls, lamps, fog, ink
-lib/cameraStore.ts        camera z outside React (see Performance)
-lib/useProximityTexture   two-tier residency: thumb far, full near
+lib/cameraStore.ts        camera z, region and chosen wing, outside React (see Performance)
+lib/warmup.ts             warm-up stages and progress, for the loading screen
+lib/occluders.ts          clicks and hovers only reach what you can actually see
+lib/useProximityTexture   two-tier residency, thumb far, full near; uploads metered per frame
 lib/concrete.ts           procedural plaster / floor, generated on the client
 ```
 
@@ -117,35 +129,56 @@ foyer just short of the new door, and walks you in, so the foyer stays the map.
 
 ## Performance
 
-Lighthouse 13, production build, headless Chrome (software GL — real GPUs are
-kinder to the 3D route than this):
+### Nothing first-time happens while you walk
 
-| | Perf | A11y | Best | SEO | TBT | LCP |
-|---|---|---|---|---|---|---|
-| Mobile  | 99  | 96–100 | 100 | 100 | 10 ms | 2.0 s |
-| Desktop | 100 | 98–100 | 100 | 100 | 0 ms  | 0.5 s |
+Every stall the walk ever had was something happening for the first time:
+a shader compiling, a photograph going up to the GPU, a light or a room
+mounting. So all of it now happens up front, behind the loading screen
+(`components/Loader.tsx`, progress in `lib/warmup.ts`):
 
-The two changes that took it from 52/66 to 99/100:
+1. **Build everything.** Every room of every wing, every frame, every label is
+   mounted once and only ever shown or hidden. Nothing mounts as you walk.
+2. **Compile everything.** Most of the building is hidden at any moment, and
+   three.js only compiles what is visible, so for one synchronous call every
+   object is made visible, `compileAsync` is started, and visibility is put
+   back (`compileEverything` in `Scene.tsx`).
+3. **Upload the photographs.** Thumbnails for every work and the first two
+   full prints of each room, a metered amount per frame.
+4. **Pre-draw.** A compiled shader is not the whole cost: the GPU driver builds
+   a pipeline the first time each shader is drawn with a given blending and
+   render target, and geometry uploads on first draw. For two frames every
+   object is drawn with culling off, through the real pipeline (reflection,
+   scene, post), then put back.
+5. Two ordinary frames, then the screen lifts.
 
-- **No throwaway WebGL context.** `Gate` used to create a context just to test
-  for support. On software GL that is ~1 s of synchronous main-thread work,
-  paid even on the flat route. It now decides from media queries and API
-  presence; the real canvas is the only context made, and an error boundary
-  falls back to the flat gallery if that fails.
-- **three.js loads on intent.** The hero is plain DOM. The scene bundle mounts
-  on the first wheel / touch / key / scroll / Enter, so the opening screen
-  paints from 91 KB and the walk is ready by the time the intro has played.
+It is capped (12 s of drawn frames) so a slow connection still gets in; any
+photographs still outstanding then stream in at a few milliseconds per frame.
 
-Three budgets. Blowing any one of them is what makes it stutter: Blowing any one of them is what makes it stutter:
+Measured on the real GPU (Apple M5, production build, `tools/perf.mjs`): the
+loading screen lifts after 1.3–1.9 s locally; past it, landing → foyer →
+room → open a photo → close → next room all run at 60 fps with no frame over
+18 ms (an occasional single 34 ms frame scrolling off the landing). Before:
+a 517 ms freeze opening a photo and a 150 ms one scrolling off the landing.
 
-- **Dynamic lights** — `MAX_PICTURE_LIGHTS` in `Lighting.tsx` caps them at 4.
-- **React renders** — camera position never touches React state. Frames read it
-  in their own `useFrame`; nothing re-renders as you walk.
-- **Post-processing** — depth of field is unmounted while walking and runs at
-  half resolution when focused. Bloom (coves only, threshold 1.0) and vignette
-  are single cheap passes. There is deliberately no film-grain pass: it is
-  temporal noise, and on still photographs it reads as pixels flashing.
-- **The floor reflection** (`MeshReflectorMaterial`, 512px) renders the scene a
+### The budgets
+
+Blowing any one of these is what makes it stutter:
+
+- **Light count.** Every lit material is compiled for an exact number of
+  lights, so adding or removing one recompiles the whole building. There are
+  always five stage lights (`LampPool.tsx`); they move to the nearest works
+  and fade, they never mount or unmount.
+- **React renders.** Camera position never touches React state. Frames read it
+  in their own `useFrame`; nothing re-renders as you walk. Components that
+  hold GPU resources are memoised: drei's floor reflector rebuilds its render
+  targets (and leaks the old ones) whenever a prop changes identity, so its
+  `blur` array is a module constant.
+- **Post-processing.** One merged pass: depth of field, bloom (coves only,
+  threshold 1.0), vignette. Depth of field stays mounted at zero strength
+  while walking; mounting it on click rebuilt the merged shader. There is
+  deliberately no film-grain pass: it is temporal noise, and on still
+  photographs it reads as pixels flashing.
+- **The floor reflection** (`MeshReflectorMaterial`, 384px) renders the scene a
   second time. It is the most expensive single thing here and the most
   atmospheric; lower `resolution` first if a device struggles.
 
@@ -153,17 +186,46 @@ Timesteps are clamped to 50 ms so a tab switch cannot snap the camera. There
 is no adaptive resolution: dropping pixel ratio while moving made the prints
 visibly soften, which on a photography site is worse than a lower frame rate.
 
+**Judging smoothness on a laptop:** on battery with Low Power Mode or Chrome's
+Energy Saver on, Chrome caps every page at 30 fps (an empty page measures
+29.9). Plug in, or switch those off, before deciding the walk is slow.
+
+### Lighthouse
+
+Lighthouse 13, production build, headless Chrome (software GL), measured
+before the loading screen existed:
+
+| | Perf | A11y | Best | SEO | TBT | LCP |
+|---|---|---|---|---|---|---|
+| Mobile  | 99  | 96–100 | 100 | 100 | 10 ms | 2.0 s |
+| Desktop | 100 | 98–100 | 100 | 100 | 0 ms  | 0.5 s |
+
+The 3D route now loads three.js straight away and does its warm-up on the
+main thread behind the loading screen, so expect a higher TBT on the desktop
+run; re-measure before quoting these. The mobile run gets the flat gallery
+and is unaffected. `Gate` still never creates a throwaway WebGL context to
+test for support; the real canvas is the only context made, and an error
+boundary falls back to the flat gallery if that fails.
+
+### Tools
+
 `tools/tour.mjs` walks every room in headless Chrome (foyer, each door, both
 sides of every corner, each end) and writes screenshots. It is the only honest
 way to check what a room looks like without opening it. `tools/test-lock.mjs`
 checks that a held photo cannot be scrolled away from. Both use dev-only hooks,
-so run them against `npm run dev`.
-Software GL runs at a few fps, so animations take ~10× longer to settle there.
+so run them against `npm run dev`. Software GL runs at a few fps, so
+animations take ~10× longer to settle there.
 
-Surface relief (plaster, floor) is generated procedurally at idle, after first
-paint, and swapped in — the first frames draw flat plaster. A service worker
-(`public/sw.js`, production only) makes repeat visits load from cache.
+`tools/perf.mjs <url>` drives a production build on the real GPU like a
+visitor would (wheel, keys, mouse) and prints frame times per phase.
+`tools/hitch.mjs <url>?stats` lists every slow frame with the GPU resources
+that appeared around it. A new texture or geometry mid-walk is a first-use
+cost the warm-up missed.
+
+The wall surfaces are generated procedurally behind the loading screen. A
+service worker (`public/sw.js`, production only) makes repeat visits load from
+cache.
 
 ## Keyboard
 
-`1`–`9` choose a room · `H` back to the foyer · hold `W` / `↑` to walk, `S` / `↓` to walk back · `J` / `→` next work · `K` / `←` previous · `Enter` open / close · `Esc` close
+`1`–`9` choose a room · `H` back to the foyer · hold `W` / `↑` to walk (and, at a dead end, on into the next room), `S` / `↓` to walk back · `J` / `→` next work · `K` / `←` previous · `Enter` open / close · `Esc` close
